@@ -22,6 +22,7 @@
 
 /* This file requires that you first include "bfd.h".  */
 #include "symtab.h"
+#include "probe.h"
 
 /* Opaque declarations.  */
 struct target_section;
@@ -29,6 +30,11 @@ struct objfile;
 struct obj_section;
 struct obstack;
 struct block;
+struct probe;
+struct value;
+struct frame_info;
+struct agent_expr;
+struct axs_value;
 
 /* Comparison function for symbol look ups.  */
 
@@ -176,7 +182,9 @@ struct quick_symbol_functions
      indicates what sort of symbol to search for.
 
      Returns the newly-expanded symbol table in which the symbol is
-     defined, or NULL if no such symbol table exists.  */
+     defined, or NULL if no such symbol table exists.  If OBJFILE
+     contains !TYPE_OPAQUE symbol prefer its symtab.  If it contains
+     only TYPE_OPAQUE symbol(s), return at least that symtab.  */
   struct symtab *(*lookup_symbol) (struct objfile *objfile,
 				   int kind, const char *name,
 				   domain_enum domain);
@@ -258,12 +266,10 @@ struct quick_symbol_functions
      file is skipped.  If FILE_MATCHER is NULL such file is not skipped.
 
      Otherwise, if KIND does not match this symbol is skipped.
-     
+
      If even KIND matches, then NAME_MATCHER is called for each symbol
-     defined in the file.  The current language, the symbol name and
-     DATA are passed to NAME_MATCHER.  The symbol "search" name should
-     be passed to NAME_MATCHER (see la_symbol_name_compare in struct
-     language_defn for more details on this).
+     defined in the file.  The symbol "search" name and DATA are passed
+     to NAME_MATCHER.
 
      If NAME_MATCHER returns zero, then this symbol is skipped.
 
@@ -274,7 +280,7 @@ struct quick_symbol_functions
   void (*expand_symtabs_matching)
     (struct objfile *objfile,
      int (*file_matcher) (const char *, void *),
-     int (*name_matcher) (const struct language_defn *, const char *, void *),
+     int (*name_matcher) (const char *, void *),
      enum search_domain kind,
      void *data);
 
@@ -297,6 +303,49 @@ struct quick_symbol_functions
   void (*map_symbol_filenames) (struct objfile *objfile,
 				symbol_filename_ftype *fun, void *data,
 				int need_fullname);
+};
+
+/* Structure of functions used for probe support.  If one of these functions
+   is provided, all must be.  */
+
+struct sym_probe_fns
+{
+  /* If non-NULL, return an array of probe objects.
+
+     The returned value does not have to be freed and it has lifetime of the
+     OBJFILE.  */
+  VEC (probe_p) *(*sym_get_probes) (struct objfile *);
+
+  /* Return the number of arguments available to PROBE.  PROBE will
+     have come from a call to this objfile's sym_get_probes method.
+     If you provide an implementation of sym_get_probes, you must
+     implement this method as well.  */
+  unsigned (*sym_get_probe_argument_count) (struct probe *probe);
+
+  /* Evaluate the Nth argument available to PROBE.  PROBE will have
+     come from a call to this objfile's sym_get_probes method.  N will
+     be between 0 and the number of arguments available to this probe.
+     FRAME is the frame in which the evaluation is done; the frame's
+     PC will match the address of the probe.  If you provide an
+     implementation of sym_get_probes, you must implement this method
+     as well.  */
+  struct value *(*sym_evaluate_probe_argument) (struct probe *probe,
+						unsigned n);
+
+  /* Compile the Nth probe argument to an agent expression.  PROBE
+     will have come from a call to this objfile's sym_get_probes
+     method.  N will be between 0 and the number of arguments
+     available to this probe.  EXPR and VALUE are the agent expression
+     that is being updated.  */
+  void (*sym_compile_to_ax) (struct probe *probe,
+			     struct agent_expr *expr,
+			     struct axs_value *value,
+			     unsigned n);
+
+  /* Relocate the probe section of OBJFILE.  */
+  void (*sym_relocate_probe) (struct objfile *objfile,
+			      struct section_offsets *new_offsets,
+			      struct section_offsets *delta);
 };
 
 /* Structure to keep track of symbol reading functions for various
@@ -368,6 +417,10 @@ struct sym_fns
      malloc'd buffer otherwise.  */
 
   bfd_byte *(*sym_relocate) (struct objfile *, asection *sectp, bfd_byte *buf);
+
+  /* If non-NULL, this objfile has probe support, and all the probe
+     functions referred to here will be non-NULL.  */
+  const struct sym_probe_fns *sym_probe_fns;
 
   /* The "quick" (aka partial) symbol functions for this symbol
      reader.  */
@@ -497,7 +550,7 @@ extern void find_lowest_section (bfd *, asection *, void *);
 
 extern bfd *symfile_bfd_open (char *);
 
-extern bfd *bfd_open_maybe_remote (const char *);
+extern bfd *gdb_bfd_open_maybe_remote (const char *);
 
 extern int get_section_index (struct objfile *, char *);
 
@@ -591,6 +644,7 @@ struct dwarf2_debug_sections {
   struct dwarf2_section_names str;
   struct dwarf2_section_names ranges;
   struct dwarf2_section_names types;
+  struct dwarf2_section_names addr;
   struct dwarf2_section_names frame;
   struct dwarf2_section_names eh_frame;
   struct dwarf2_section_names gdb_index;

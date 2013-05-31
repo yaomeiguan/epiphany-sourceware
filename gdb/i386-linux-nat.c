@@ -708,8 +708,8 @@ i386_linux_dr_get_status (void)
   return i386_linux_dr_get (inferior_ptid, DR_STATUS);
 }
 
-/* Callback for iterate_over_lwps.  Update the debug registers of
-   LWP.  */
+/* Callback for linux_nat_iterate_watchpoint_lwps.  Update the debug registers
+   of LWP.  */
 
 static int
 update_debug_registers_callback (struct lwp_info *lwp, void *arg)
@@ -735,9 +735,7 @@ update_debug_registers_callback (struct lwp_info *lwp, void *arg)
 static void
 i386_linux_dr_set_control (unsigned long control)
 {
-  ptid_t pid_ptid = pid_to_ptid (ptid_get_pid (inferior_ptid));
-
-  iterate_over_lwps (pid_ptid, update_debug_registers_callback, NULL);
+  linux_nat_iterate_watchpoint_lwps (update_debug_registers_callback, NULL);
 }
 
 /* Set address REGNUM (zero based) to ADDR in all LWPs of the current
@@ -750,7 +748,7 @@ i386_linux_dr_set_addr (int regnum, CORE_ADDR addr)
 
   gdb_assert (regnum >= 0 && regnum <= DR_LASTADDR - DR_FIRSTADDR);
 
-  iterate_over_lwps (pid_ptid, update_debug_registers_callback, NULL);
+  linux_nat_iterate_watchpoint_lwps (update_debug_registers_callback, NULL);
 }
 
 /* Called when resuming a thread.
@@ -771,6 +769,9 @@ i386_linux_prepare_to_resume (struct lwp_info *lwp)
     {
       struct i386_debug_reg_state *state = i386_debug_reg_state ();
       int i;
+
+      /* See amd64_linux_prepare_to_resume for Linux kernel note on
+	 i386_linux_dr_set calls ordering.  */
 
       for (i = DR_FIRSTADDR; i <= DR_LASTADDR; i++)
 	if (state->dr_ref_count[i] > 0)
@@ -874,7 +875,7 @@ static const unsigned char linux_syscall[] = { 0xcd, 0x80 };
 
 static void
 i386_linux_resume (struct target_ops *ops,
-		   ptid_t ptid, int step, enum target_signal signal)
+		   ptid_t ptid, int step, enum gdb_signal signal)
 {
   int pid = PIDGET (ptid);
 
@@ -937,7 +938,7 @@ i386_linux_resume (struct target_ops *ops,
 	}
     }
 
-  if (ptrace (request, pid, 0, target_signal_to_host (signal)) == -1)
+  if (ptrace (request, pid, 0, gdb_signal_to_host (signal)) == -1)
     perror_with_name (("ptrace"));
 }
 
@@ -1006,6 +1007,9 @@ i386_linux_read_description (struct target_ops *ops)
   else
     return tdesc_i386_linux;
 }
+
+/* -Wmissing-prototypes */
+extern initialize_file_ftype _initialize_i386_linux_nat;
 
 void
 _initialize_i386_linux_nat (void)

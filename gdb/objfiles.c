@@ -53,6 +53,7 @@
 #include "complaints.h"
 #include "psymtab.h"
 #include "solist.h"
+#include "gdb_bfd.h"
 
 /* Prototypes for local functions */
 
@@ -105,13 +106,6 @@ get_objfile_pspace_data (struct program_space *pspace)
   return info;
 }
 
-/* Records whether any objfiles appeared or disappeared since we last updated
-   address to obj section map.  */
-
-/* Locate all mappable sections of a BFD file.
-   objfile_p_char is a char * to get it through
-   bfd_map_over_sections; we cast it back to its proper type.  */
-
 /* Called via bfd_map_over_sections to build up the section table that
    the objfile references.  The objfile contains pointers to the start
    of the table (objfile->sections) and to the first location after
@@ -119,19 +113,18 @@ get_objfile_pspace_data (struct program_space *pspace)
 
 static void
 add_to_objfile_sections (struct bfd *abfd, struct bfd_section *asect,
-			 void *objfile_p_char)
+			 void *objfilep)
 {
-  struct objfile *objfile = (struct objfile *) objfile_p_char;
+  struct objfile *objfile = (struct objfile *) objfilep;
   struct obj_section section;
   flagword aflag;
 
   aflag = bfd_get_section_flags (abfd, asect);
-
   if (!(aflag & SEC_ALLOC))
     return;
-
-  if (0 == bfd_section_size (abfd, asect))
+  if (bfd_section_size (abfd, asect) == 0)
     return;
+
   section.objfile = objfile;
   section.the_bfd_section = asect;
   section.ovly_mapped = 0;
@@ -142,11 +135,9 @@ add_to_objfile_sections (struct bfd *abfd, struct bfd_section *asect,
 }
 
 /* Builds a section table for OBJFILE.
-   Returns 0 if OK, 1 on error (in which case bfd_error contains the
-   error).
 
    Note that while we are building the table, which goes into the
-   psymbol obstack, we hijack the sections_end pointer to instead hold
+   objfile obstack, we hijack the sections_end pointer to instead hold
    a count of the number of sections.  When bfd_map_over_sections
    returns, this count is used to compute the pointer to the end of
    the sections table, which then overwrites the count.
@@ -154,10 +145,10 @@ add_to_objfile_sections (struct bfd *abfd, struct bfd_section *asect,
    Also note that the OFFSET and OVLY_MAPPED in each table entry
    are initialized to zero.
 
-   Also note that if anything else writes to the psymbol obstack while
+   Also note that if anything else writes to the objfile obstack while
    we are building the table, we're pretty much hosed.  */
 
-int
+void
 build_objfile_section_table (struct objfile *objfile)
 {
   objfile->sections_end = 0;
@@ -165,7 +156,6 @@ build_objfile_section_table (struct objfile *objfile)
 			 add_to_objfile_sections, (void *) objfile);
   objfile->sections = obstack_finish (&objfile->objfile_obstack);
   objfile->sections_end = objfile->sections + (size_t) objfile->sections_end;
-  return (0);
 }
 
 /* Given a pointer to an initialized bfd (ABFD) and some flag bits
@@ -206,7 +196,8 @@ allocate_objfile (bfd *abfd, int flags)
      that any data that is reference is saved in the per-objfile data
      region.  */
 
-  objfile->obfd = gdb_bfd_ref (abfd);
+  objfile->obfd = abfd;
+  gdb_bfd_ref (abfd);
   if (abfd != NULL)
     {
       /* Look up the gdbarch associated with the BFD.  */
@@ -216,12 +207,7 @@ allocate_objfile (bfd *abfd, int flags)
       objfile->mtime = bfd_get_mtime (abfd);
 
       /* Build section table.  */
-
-      if (build_objfile_section_table (objfile))
-	{
-	  error (_("Can't find the file sections in `%s': %s"),
-		 objfile->name, bfd_errmsg (bfd_get_error ()));
-	}
+      build_objfile_section_table (objfile);
     }
   else
     {
@@ -746,7 +732,9 @@ objfile_relocate1 (struct objfile *objfile,
 	  BLOCK_START (b) += ANOFFSET (delta, s->block_line_section);
 	  BLOCK_END (b) += ANOFFSET (delta, s->block_line_section);
 
-	  ALL_BLOCK_SYMBOLS (b, iter, sym)
+	  /* We only want to iterate over the local symbols, not any
+	     symbols in included symtabs.  */
+	  ALL_DICT_SYMBOLS (BLOCK_DICT (b), iter, sym)
 	    {
 	      relocate_one_symbol (sym, objfile, delta);
 	    }
@@ -810,6 +798,11 @@ objfile_relocate1 (struct objfile *objfile,
       exec_set_section_address (bfd_get_filename (objfile->obfd), idx,
 				obj_section_addr (s));
     }
+
+  /* Relocating probes.  */
+  if (objfile->sf && objfile->sf->sym_probe_fns)
+    objfile->sf->sym_probe_fns->sym_relocate_probe (objfile,
+						    new_offsets, delta);
 
   /* Data changed.  */
   return 1;
@@ -1465,73 +1458,29 @@ objfiles_changed (void)
   get_objfile_pspace_data (current_program_space)->objfiles_changed_p = 1;
 }
 
-/* Close ABFD, and warn if that fails.  */
+/* The default implementation for the "iterate_over_objfiles_in_search_order"
+   gdbarch method.  It is equivalent to use the ALL_OBJFILES macro,
+   searching the objfiles in the order they are stored internally,
+   ignoring CURRENT_OBJFILE.
 
-int
-gdb_bfd_close_or_warn (struct bfd *abfd)
-{
-  int ret;
-  char *name = bfd_get_filename (abfd);
+   On most platorms, it should be close enough to doing the best
+   we can without some knowledge specific to the architecture.  */
 
-  ret = bfd_close (abfd);
-
-  if (!ret)
-    warning (_("cannot close \"%s\": %s"),
-	     name, bfd_errmsg (bfd_get_error ()));
-
-  return ret;
-}
-
-/* Add reference to ABFD.  Returns ABFD.  */
-struct bfd *
-gdb_bfd_ref (struct bfd *abfd)
-{
-  int *p_refcount;
-
-  if (abfd == NULL)
-    return NULL;
-
-  p_refcount = bfd_usrdata (abfd);
-
-  if (p_refcount != NULL)
-    {
-      *p_refcount += 1;
-      return abfd;
-    }
-
-  p_refcount = xmalloc (sizeof (*p_refcount));
-  *p_refcount = 1;
-  bfd_usrdata (abfd) = p_refcount;
-
-  return abfd;
-}
-
-/* Unreference and possibly close ABFD.  */
 void
-gdb_bfd_unref (struct bfd *abfd)
+default_iterate_over_objfiles_in_search_order
+  (struct gdbarch *gdbarch,
+   iterate_over_objfiles_in_search_order_cb_ftype *cb,
+   void *cb_data, struct objfile *current_objfile)
 {
-  int *p_refcount;
-  char *name;
+  int stop = 0;
+  struct objfile *objfile;
 
-  if (abfd == NULL)
-    return;
-
-  p_refcount = bfd_usrdata (abfd);
-
-  /* Valid range for p_refcount: a pointer to int counter, which has a
-     value of 1 (single owner) or 2 (shared).  */
-  gdb_assert (*p_refcount == 1 || *p_refcount == 2);
-
-  *p_refcount -= 1;
-  if (*p_refcount > 0)
-    return;
-
-  xfree (p_refcount);
-  bfd_usrdata (abfd) = NULL;  /* Paranoia.  */
-
-  name = bfd_get_filename (abfd);
-  gdb_bfd_close_or_warn (abfd);
-  xfree (name);
+  ALL_OBJFILES (objfile)
+    {
+       stop = cb (objfile, cb_data);
+       if (stop)
+	 return;
+    }
 }
 
 /* Provide a prototype to silence -Wmissing-prototypes.  */

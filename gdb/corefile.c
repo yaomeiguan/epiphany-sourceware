@@ -34,6 +34,7 @@
 #include "gdb_stat.h"
 #include "completer.h"
 #include "exceptions.h"
+#include "observer.h"
 
 /* Local function declarations.  */
 
@@ -213,7 +214,7 @@ memory_error (int status, CORE_ADDR memaddr)
 /* Same as target_read_memory, but report an error if can't read.  */
 
 void
-read_memory (CORE_ADDR memaddr, gdb_byte *myaddr, int len)
+read_memory (CORE_ADDR memaddr, gdb_byte *myaddr, ssize_t len)
 {
   int status;
 
@@ -225,7 +226,7 @@ read_memory (CORE_ADDR memaddr, gdb_byte *myaddr, int len)
 /* Same as target_read_stack, but report an error if can't read.  */
 
 void
-read_stack (CORE_ADDR memaddr, gdb_byte *myaddr, int len)
+read_stack (CORE_ADDR memaddr, gdb_byte *myaddr, ssize_t len)
 {
   int status;
 
@@ -352,13 +353,23 @@ read_memory_typed_address (CORE_ADDR addr, struct type *type)
    write.  */
 void
 write_memory (CORE_ADDR memaddr, 
-	      const bfd_byte *myaddr, int len)
+	      const bfd_byte *myaddr, ssize_t len)
 {
   int status;
 
   status = target_write_memory (memaddr, myaddr, len);
   if (status != 0)
     memory_error (status, memaddr);
+}
+
+/* Same as write_memory, but notify 'memory_changed' observers.  */
+
+void
+write_memory_with_notification (CORE_ADDR memaddr, const bfd_byte *myaddr,
+				ssize_t len)
+{
+  write_memory (memaddr, myaddr, len);
+  observer_notify_memory_changed (memaddr, len, myaddr);
 }
 
 /* Store VALUE at ADDR in the inferior as a LEN-byte unsigned

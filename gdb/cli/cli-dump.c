@@ -32,6 +32,7 @@
 #include "readline/readline.h"
 #include "gdbcore.h"
 #include "cli/cli-utils.h"
+#include "gdb_bfd.h"
 
 #define XMALLOC(TYPE) ((TYPE*) xmalloc (sizeof (TYPE)))
 
@@ -111,12 +112,12 @@ bfd_openr_with_cleanup (const char *filename, const char *target)
 {
   bfd *ibfd;
 
-  ibfd = bfd_openr (filename, target);
+  ibfd = gdb_bfd_openr (filename, target);
   if (ibfd == NULL)
     error (_("Failed to open %s: %s."), filename, 
 	   bfd_errmsg (bfd_get_error ()));
 
-  make_cleanup_bfd_close (ibfd);
+  make_cleanup_bfd_unref (ibfd);
   if (!bfd_check_format (ibfd, bfd_object))
     error (_("'%s' is not a recognized file format."), filename);
 
@@ -131,11 +132,11 @@ bfd_openw_with_cleanup (const char *filename, const char *target,
 
   if (*mode == 'w')	/* Write: create new file */
     {
-      obfd = bfd_openw (filename, target);
+      obfd = gdb_bfd_openw (filename, target);
       if (obfd == NULL)
 	error (_("Failed to open %s: %s."), filename, 
 	       bfd_errmsg (bfd_get_error ()));
-      make_cleanup_bfd_close (obfd);
+      make_cleanup_bfd_unref (obfd);
       if (!bfd_set_format (obfd, bfd_object))
 	error (_("bfd_openw_with_cleanup: %s."), bfd_errmsg (bfd_get_error ()));
     }

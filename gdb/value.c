@@ -41,6 +41,7 @@
 #include "python/python.h"
 #include <ctype.h>
 #include "tracepoint.h"
+#include "cp-abi.h"
 
 /* Prototypes for exported functions.  */
 
@@ -805,6 +806,14 @@ value_parent (struct value *value)
   return value->parent;
 }
 
+/* See value.h.  */
+
+void
+set_value_parent (struct value *value, struct value *parent)
+{
+  value->parent = parent;
+}
+
 gdb_byte *
 value_contents_raw (struct value *value)
 {
@@ -823,6 +832,46 @@ struct type *
 value_enclosing_type (struct value *value)
 {
   return value->enclosing_type;
+}
+
+/* Look at value.h for description.  */
+
+struct type *
+value_actual_type (struct value *value, int resolve_simple_types,
+		   int *real_type_found)
+{
+  struct value_print_options opts;
+  struct type *result;
+
+  get_user_print_options (&opts);
+
+  if (real_type_found)
+    *real_type_found = 0;
+  result = value_type (value);
+  if (opts.objectprint)
+    {
+      if (TYPE_CODE (result) == TYPE_CODE_PTR
+	  || TYPE_CODE (result) == TYPE_CODE_REF)
+        {
+          struct type *real_type;
+
+          real_type = value_rtti_indirect_type (value, NULL, NULL, NULL);
+          if (real_type)
+            {
+              if (real_type_found)
+                *real_type_found = 1;
+              result = real_type;
+            }
+        }
+      else if (resolve_simple_types)
+        {
+          if (real_type_found)
+            *real_type_found = 1;
+          result = value_enclosing_type (value);
+        }
+    }
+
+  return result;
 }
 
 static void
@@ -1100,7 +1149,10 @@ value_address (const struct value *value)
   if (value->lval == lval_internalvar
       || value->lval == lval_internalvar_component)
     return 0;
-  return value->location.address + value->offset;
+  if (value->parent != NULL)
+    return value_address (value->parent) + value->offset;
+  else
+    return value->location.address + value->offset;
 }
 
 CORE_ADDR
@@ -1576,7 +1628,14 @@ struct internalvar
       struct value *value;
 
       /* The call-back routine used with INTERNALVAR_MAKE_VALUE.  */
-      internalvar_make_value make_value;
+      struct
+        {
+	  /* The functions to call.  */
+	  const struct internalvar_funcs *functions;
+
+	  /* The function's user-data.  */
+	  void *data;
+        } make_value;
 
       /* The internal function used with INTERNALVAR_FUNCTION.  */
       struct
@@ -1655,6 +1714,29 @@ lookup_only_internalvar (const char *name)
   return NULL;
 }
 
+/* Complete NAME by comparing it to the names of internal variables.
+   Returns a vector of newly allocated strings, or NULL if no matches
+   were found.  */
+
+VEC (char_ptr) *
+complete_internalvar (const char *name)
+{
+  VEC (char_ptr) *result = NULL;
+  struct internalvar *var;
+  int len;
+
+  len = strlen (name);
+
+  for (var = internalvars; var; var = var->next)
+    if (strncmp (var->name, name, len) == 0)
+      {
+	char *r = xstrdup (var->name);
+
+	VEC_safe_push (char_ptr, result, r);
+      }
+
+  return result;
+}
 
 /* Create an internal variable with name NAME and with a void value.
    NAME should not normally include a dollar sign.  */
@@ -1675,16 +1757,37 @@ create_internalvar (const char *name)
 /* Create an internal variable with name NAME and register FUN as the
    function that value_of_internalvar uses to create a value whenever
    this variable is referenced.  NAME should not normally include a
-   dollar sign.  */
+   dollar sign.  DATA is passed uninterpreted to FUN when it is
+   called.  CLEANUP, if not NULL, is called when the internal variable
+   is destroyed.  It is passed DATA as its only argument.  */
 
 struct internalvar *
-create_internalvar_type_lazy (char *name, internalvar_make_value fun)
+create_internalvar_type_lazy (const char *name,
+			      const struct internalvar_funcs *funcs,
+			      void *data)
 {
   struct internalvar *var = create_internalvar (name);
 
   var->kind = INTERNALVAR_MAKE_VALUE;
-  var->u.make_value = fun;
+  var->u.make_value.functions = funcs;
+  var->u.make_value.data = data;
   return var;
+}
+
+/* See documentation in value.h.  */
+
+int
+compile_internalvar_to_ax (struct internalvar *var,
+			   struct agent_expr *expr,
+			   struct axs_value *value)
+{
+  if (var->kind != INTERNALVAR_MAKE_VALUE
+      || var->u.make_value.functions->compile_to_ax == NULL)
+    return 0;
+
+  var->u.make_value.functions->compile_to_ax (var, expr, value,
+					      var->u.make_value.data);
+  return 1;
 }
 
 /* Look up an internal variable with name NAME.  NAME should not
@@ -1759,7 +1862,8 @@ value_of_internalvar (struct gdbarch *gdbarch, struct internalvar *var)
       break;
 
     case INTERNALVAR_MAKE_VALUE:
-      val = (*var->u.make_value) (gdbarch, var);
+      val = (*var->u.make_value.functions->make_value) (gdbarch, var,
+							var->u.make_value.data);
       break;
 
     default:
@@ -1953,6 +2057,11 @@ clear_internalvar (struct internalvar *var)
 
     case INTERNALVAR_STRING:
       xfree (var->u.string);
+      break;
+
+    case INTERNALVAR_MAKE_VALUE:
+      if (var->u.make_value.functions->destroy != NULL)
+	var->u.make_value.functions->destroy (var->u.make_value.data);
       break;
 
     default:
@@ -2549,10 +2658,23 @@ value_primitive_field (struct value *arg1, int offset,
       /* This field is actually a base subobject, so preserve the
 	 entire object's contents for later references to virtual
 	 bases, etc.  */
+      int boffset;
 
       /* Lazy register values with offsets are not supported.  */
       if (VALUE_LVAL (arg1) == lval_register && value_lazy (arg1))
 	value_fetch_lazy (arg1);
+
+      /* We special case virtual inheritance here because this
+	 requires access to the contents, which we would rather avoid
+	 for references to ordinary fields of unavailable values.  */
+      if (BASETYPE_VIA_VIRTUAL (arg_type, fieldno))
+	boffset = baseclass_offset (arg_type, fieldno,
+				    value_contents (arg1),
+				    value_embedded_offset (arg1),
+				    value_address (arg1),
+				    arg1);
+      else
+	boffset = TYPE_FIELD_BITPOS (arg_type, fieldno) / 8;
 
       if (value_lazy (arg1))
 	v = allocate_value_lazy (value_enclosing_type (arg1));
@@ -2564,8 +2686,7 @@ value_primitive_field (struct value *arg1, int offset,
 	}
       v->type = type;
       v->offset = value_offset (arg1);
-      v->embedded_offset = (offset + value_embedded_offset (arg1)
-			    + TYPE_FIELD_BITPOS (arg_type, fieldno) / 8);
+      v->embedded_offset = offset + value_embedded_offset (arg1) + boffset;
     }
   else
     {
@@ -2929,7 +3050,7 @@ pack_long (gdb_byte *buf, struct type *type, LONGEST num)
 
 /* Pack NUM into BUF using a target format of TYPE.  */
 
-void
+static void
 pack_unsigned_long (gdb_byte *buf, struct type *type, ULONGEST num)
 {
   int len;
@@ -3134,11 +3255,30 @@ coerce_ref_if_computed (const struct value *arg)
   return funcs->coerce_ref (arg);
 }
 
+/* Look at value.h for description.  */
+
+struct value *
+readjust_indirect_value_type (struct value *value, struct type *enc_type,
+			      struct type *original_type,
+			      struct value *original_value)
+{
+  /* Re-adjust type.  */
+  deprecated_set_value_type (value, TYPE_TARGET_TYPE (original_type));
+
+  /* Add embedding info.  */
+  set_value_enclosing_type (value, enc_type);
+  set_value_embedded_offset (value, value_pointed_to_offset (original_value));
+
+  /* We may be pointing to an object of some derived type.  */
+  return value_full_object (value, NULL, 0, 0, 0);
+}
+
 struct value *
 coerce_ref (struct value *arg)
 {
   struct type *value_type_arg_tmp = check_typedef (value_type (arg));
   struct value *retval;
+  struct type *enc_type;
 
   retval = coerce_ref_if_computed (arg);
   if (retval)
@@ -3147,9 +3287,14 @@ coerce_ref (struct value *arg)
   if (TYPE_CODE (value_type_arg_tmp) != TYPE_CODE_REF)
     return arg;
 
-  return value_at_lazy (TYPE_TARGET_TYPE (value_type_arg_tmp),
-			unpack_pointer (value_type (arg),
-					value_contents (arg)));
+  enc_type = check_typedef (value_enclosing_type (arg));
+  enc_type = TYPE_TARGET_TYPE (enc_type);
+
+  retval = value_at_lazy (enc_type,
+                          unpack_pointer (value_type (arg),
+                                          value_contents (arg)));
+  return readjust_indirect_value_type (retval, enc_type,
+                                       value_type_arg_tmp, arg);
 }
 
 struct value *
@@ -3180,7 +3325,7 @@ coerce_array (struct value *arg)
 
 int
 using_struct_return (struct gdbarch *gdbarch,
-		     struct type *func_type, struct type *value_type)
+		     struct value *function, struct type *value_type)
 {
   enum type_code code = TYPE_CODE (value_type);
 
@@ -3193,7 +3338,7 @@ using_struct_return (struct gdbarch *gdbarch,
     return 0;
 
   /* Probe the architecture for the return-value convention.  */
-  return (gdbarch_return_value (gdbarch, func_type, value_type,
+  return (gdbarch_return_value (gdbarch, function, value_type,
 				NULL, NULL, NULL)
 	  != RETURN_VALUE_REGISTER_CONVENTION);
 }

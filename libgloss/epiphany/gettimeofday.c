@@ -1,6 +1,6 @@
 /* EPIPHANY implementation of _stat ()
 
-   Copyright (c) 2011, Adapteva, Inc.
+   Copyright (c) 2011, 2012 Adapteva, Inc.
    All rights reserved.
 
    Contributor Joern Rennecke <joern.rennecke@embecosm.com> for Adapteva Inc.
