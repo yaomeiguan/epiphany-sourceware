@@ -33,6 +33,7 @@
 #include "arch-utils.h"
 #include "gdbthread.h"
 #include "progspace.h"
+#include "gdb_bfd.h"
 
 #include <fcntl.h>
 #include "readline/readline.h"
@@ -98,10 +99,8 @@ exec_close (void)
   if (exec_bfd)
     {
       bfd *abfd = exec_bfd;
-      char *name = bfd_get_filename (abfd);
 
-      gdb_bfd_close_or_warn (abfd);
-      xfree (name);
+      gdb_bfd_unref (abfd);
 
       /* Removing target sections may close the exec_ops target.
 	 Clear exec_bfd before doing so to prevent recursion.  */
@@ -128,17 +127,13 @@ exec_close_1 (int quitting)
       vp = nxt;
       nxt = vp->nxt;
 
-      /* if there is an objfile associated with this bfd,
-         free_objfile() will do proper cleanup of objfile *and* bfd.  */
-
       if (vp->objfile)
 	{
 	  free_objfile (vp->objfile);
 	  need_symtab_cleanup = 1;
 	}
-      else if (vp->bfd != exec_bfd)
-	/* FIXME-leak: We should be freeing vp->name too, I think.  */
-	gdb_bfd_close_or_warn (vp->bfd);
+
+      gdb_bfd_unref (vp->bfd);
 
       xfree (vp);
     }
@@ -230,25 +225,20 @@ exec_file_attach (char *filename, int from_tty)
 	     &scratch_pathname);
 	}
 #endif
+
+      cleanups = make_cleanup (xfree, scratch_pathname);
+
       if (scratch_chan < 0)
 	perror_with_name (filename);
-      exec_bfd = bfd_fopen (scratch_pathname, gnutarget,
-			    write_files ? FOPEN_RUB : FOPEN_RB,
-			    scratch_chan);
+      exec_bfd = gdb_bfd_fopen (scratch_pathname, gnutarget,
+				write_files ? FOPEN_RUB : FOPEN_RB,
+				scratch_chan);
 
       if (!exec_bfd)
 	{
-	  close (scratch_chan);
 	  error (_("\"%s\": could not open as an executable file: %s"),
 		 scratch_pathname, bfd_errmsg (bfd_get_error ()));
 	}
-
-      /* At this point, scratch_pathname and exec_bfd->name both point to the
-         same malloc'd string.  However exec_close() will attempt to free it
-         via the exec_bfd->name pointer, so we need to make another copy and
-         leave exec_bfd as the new owner of the original copy.  */
-      scratch_pathname = xstrdup (scratch_pathname);
-      cleanups = make_cleanup (xfree, scratch_pathname);
 
       if (!bfd_check_format_matches (exec_bfd, bfd_object, &matching))
 	{
@@ -555,6 +545,7 @@ map_vmap (bfd *abfd, bfd *arch)
   memset ((char *) vp, '\0', sizeof (*vp));
   vp->nxt = 0;
   vp->bfd = abfd;
+  gdb_bfd_ref (abfd);
   vp->name = bfd_get_filename (arch ? arch : abfd);
   vp->member = arch ? bfd_get_filename (abfd) : "";
 
@@ -667,7 +658,7 @@ section_table_xfer_memory_partial (gdb_byte *readbuf, const gdb_byte *writebuf,
   return 0;			/* We can't help.  */
 }
 
-struct target_section_table *
+static struct target_section_table *
 exec_get_section_table (struct target_ops *ops)
 {
   return current_target_sections;
@@ -761,7 +752,10 @@ print_section_info (struct target_section_table *t, bfd *abfd)
 static void
 exec_files_info (struct target_ops *t)
 {
-  print_section_info (current_target_sections, exec_bfd);
+  if (exec_bfd)
+    print_section_info (current_target_sections, exec_bfd);
+  else
+    puts_filtered (_("\t<no file loaded>\n"));
 
   if (vmap)
     {
@@ -813,9 +807,9 @@ set_section_command (char *args, int from_tty)
   table = current_target_sections;
   for (p = table->sections; p < table->sections_end; p++)
     {
-      if (!strncmp (secname, bfd_section_name (exec_bfd,
+      if (!strncmp (secname, bfd_section_name (p->bfd,
 					       p->the_bfd_section), seclen)
-	  && bfd_section_name (exec_bfd, p->the_bfd_section)[seclen] == '\0')
+	  && bfd_section_name (p->bfd, p->the_bfd_section)[seclen] == '\0')
 	{
 	  offset = secaddr - p->addr;
 	  p->addr += offset;

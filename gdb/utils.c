@@ -26,6 +26,8 @@
 #include "event-top.h"
 #include "exceptions.h"
 #include "gdbthread.h"
+#include "fnmatch.h"
+#include "gdb_bfd.h"
 #ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
 #endif /* HAVE_SYS_RESOURCE_H */
@@ -99,8 +101,6 @@ static void vfprintf_maybe_filtered (struct ui_file *, const char *,
 
 static void fputs_maybe_filtered (const char *, struct ui_file *, int);
 
-static void do_my_cleanups (struct cleanup **, struct cleanup *);
-
 static void prompt_for_continue (void);
 
 static void set_screen_size (void);
@@ -109,12 +109,6 @@ static void set_width (void);
 /* A flag indicating whether to timestamp debugging messages.  */
 
 static int debug_timestamp = 0;
-
-/* Chain of cleanup actions established with make_cleanup,
-   to be executed if an error happens.  */
-
-static struct cleanup *cleanup_chain;	/* cleaned up after a failed command */
-static struct cleanup *final_cleanup_chain;	/* cleaned up when gdb exits */
 
 /* Nonzero if we have job control.  */
 
@@ -172,31 +166,11 @@ show_pagination_enabled (struct ui_file *file, int from_tty,
 }
 
 
+/* Cleanup utilities.
 
-/* Add a new cleanup to the cleanup_chain,
-   and return the previous chain pointer
-   to be passed later to do_cleanups or discard_cleanups.
-   Args are FUNCTION to clean up with, and ARG to pass to it.  */
-
-struct cleanup *
-make_cleanup (make_cleanup_ftype *function, void *arg)
-{
-  return make_my_cleanup (&cleanup_chain, function, arg);
-}
-
-struct cleanup *
-make_cleanup_dtor (make_cleanup_ftype *function, void *arg,
-		   void (*dtor) (void *))
-{
-  return make_my_cleanup2 (&cleanup_chain,
-			   function, arg, dtor);
-}
-
-struct cleanup *
-make_final_cleanup (make_cleanup_ftype *function, void *arg)
-{
-  return make_my_cleanup (&final_cleanup_chain, function, arg);
-}
+   These are not defined in cleanups.c (nor declared in cleanups.h)
+   because while they use the "cleanup API" they are not part of the
+   "cleanup API".  */
 
 static void
 do_freeargv (void *arg)
@@ -207,7 +181,7 @@ do_freeargv (void *arg)
 struct cleanup *
 make_cleanup_freeargv (char **arg)
 {
-  return make_my_cleanup (&cleanup_chain, do_freeargv, arg);
+  return make_cleanup (do_freeargv, arg);
 }
 
 static void
@@ -219,17 +193,17 @@ do_dyn_string_delete (void *arg)
 struct cleanup *
 make_cleanup_dyn_string_delete (dyn_string_t arg)
 {
-  return make_my_cleanup (&cleanup_chain, do_dyn_string_delete, arg);
+  return make_cleanup (do_dyn_string_delete, arg);
 }
 
 static void
 do_bfd_close_cleanup (void *arg)
 {
-  bfd_close (arg);
+  gdb_bfd_unref (arg);
 }
 
 struct cleanup *
-make_cleanup_bfd_close (bfd *abfd)
+make_cleanup_bfd_unref (bfd *abfd)
 {
   return make_cleanup (do_bfd_close_cleanup, abfd);
 }
@@ -296,7 +270,7 @@ do_ui_file_delete (void *arg)
 struct cleanup *
 make_cleanup_ui_file_delete (struct ui_file *arg)
 {
-  return make_my_cleanup (&cleanup_chain, do_ui_file_delete, arg);
+  return make_cleanup (do_ui_file_delete, arg);
 }
 
 /* Helper function for make_cleanup_ui_out_redirect_pop.  */
@@ -316,7 +290,7 @@ do_ui_out_redirect_pop (void *arg)
 struct cleanup *
 make_cleanup_ui_out_redirect_pop (struct ui_out *uiout)
 {
-  return make_my_cleanup (&cleanup_chain, do_ui_out_redirect_pop, uiout);
+  return make_cleanup (do_ui_out_redirect_pop, uiout);
 }
 
 static void
@@ -328,7 +302,7 @@ do_free_section_addr_info (void *arg)
 struct cleanup *
 make_cleanup_free_section_addr_info (struct section_addr_info *addrs)
 {
-  return make_my_cleanup (&cleanup_chain, do_free_section_addr_info, addrs);
+  return make_cleanup (do_free_section_addr_info, addrs);
 }
 
 struct restore_integer_closure
@@ -357,8 +331,7 @@ make_cleanup_restore_integer (int *variable)
   c->variable = variable;
   c->value = *variable;
 
-  return make_my_cleanup2 (&cleanup_chain, restore_integer, (void *)c,
-			   xfree);
+  return make_cleanup_dtor (restore_integer, (void *) c, xfree);
 }
 
 /* Remember the current value of *VARIABLE and make it restored when
@@ -385,7 +358,7 @@ do_unpush_target (void *arg)
 struct cleanup *
 make_cleanup_unpush_target (struct target_ops *ops)
 {
-  return make_my_cleanup (&cleanup_chain, do_unpush_target, ops);
+  return make_cleanup (do_unpush_target, ops);
 }
 
 /* Helper for make_cleanup_htab_delete compile time checking the types.  */
@@ -448,7 +421,7 @@ do_value_free_to_mark (void *value)
 struct cleanup *
 make_cleanup_value_free_to_mark (struct value *mark)
 {
-  return make_my_cleanup (&cleanup_chain, do_value_free_to_mark, mark);
+  return make_cleanup (do_value_free_to_mark, mark);
 }
 
 /* Helper for make_cleanup_value_free.  */
@@ -464,7 +437,7 @@ do_value_free (void *value)
 struct cleanup *
 make_cleanup_value_free (struct value *value)
 {
-  return make_my_cleanup (&cleanup_chain, do_value_free, value);
+  return make_cleanup (do_value_free, value);
 }
 
 /* Helper for make_cleanup_free_so.  */
@@ -482,133 +455,7 @@ do_free_so (void *arg)
 struct cleanup *
 make_cleanup_free_so (struct so_list *so)
 {
-  return make_my_cleanup (&cleanup_chain, do_free_so, so);
-}
-
-struct cleanup *
-make_my_cleanup2 (struct cleanup **pmy_chain, make_cleanup_ftype *function,
-		  void *arg,  void (*free_arg) (void *))
-{
-  struct cleanup *new
-    = (struct cleanup *) xmalloc (sizeof (struct cleanup));
-  struct cleanup *old_chain = *pmy_chain;
-
-  new->next = *pmy_chain;
-  new->function = function;
-  new->free_arg = free_arg;
-  new->arg = arg;
-  *pmy_chain = new;
-
-  return old_chain;
-}
-
-struct cleanup *
-make_my_cleanup (struct cleanup **pmy_chain, make_cleanup_ftype *function,
-		 void *arg)
-{
-  return make_my_cleanup2 (pmy_chain, function, arg, NULL);
-}
-
-/* Discard cleanups and do the actions they describe
-   until we get back to the point OLD_CHAIN in the cleanup_chain.  */
-
-void
-do_cleanups (struct cleanup *old_chain)
-{
-  do_my_cleanups (&cleanup_chain, old_chain);
-}
-
-void
-do_final_cleanups (struct cleanup *old_chain)
-{
-  do_my_cleanups (&final_cleanup_chain, old_chain);
-}
-
-static void
-do_my_cleanups (struct cleanup **pmy_chain,
-		struct cleanup *old_chain)
-{
-  struct cleanup *ptr;
-
-  while ((ptr = *pmy_chain) != old_chain)
-    {
-      *pmy_chain = ptr->next;	/* Do this first in case of recursion.  */
-      (*ptr->function) (ptr->arg);
-      if (ptr->free_arg)
-	(*ptr->free_arg) (ptr->arg);
-      xfree (ptr);
-    }
-}
-
-/* Discard cleanups, not doing the actions they describe,
-   until we get back to the point OLD_CHAIN in the cleanup_chain.  */
-
-void
-discard_cleanups (struct cleanup *old_chain)
-{
-  discard_my_cleanups (&cleanup_chain, old_chain);
-}
-
-void
-discard_final_cleanups (struct cleanup *old_chain)
-{
-  discard_my_cleanups (&final_cleanup_chain, old_chain);
-}
-
-void
-discard_my_cleanups (struct cleanup **pmy_chain,
-		     struct cleanup *old_chain)
-{
-  struct cleanup *ptr;
-
-  while ((ptr = *pmy_chain) != old_chain)
-    {
-      *pmy_chain = ptr->next;
-      if (ptr->free_arg)
-	(*ptr->free_arg) (ptr->arg);
-      xfree (ptr);
-    }
-}
-
-/* Set the cleanup_chain to 0, and return the old cleanup chain.  */
-struct cleanup *
-save_cleanups (void)
-{
-  return save_my_cleanups (&cleanup_chain);
-}
-
-struct cleanup *
-save_final_cleanups (void)
-{
-  return save_my_cleanups (&final_cleanup_chain);
-}
-
-struct cleanup *
-save_my_cleanups (struct cleanup **pmy_chain)
-{
-  struct cleanup *old_chain = *pmy_chain;
-
-  *pmy_chain = 0;
-  return old_chain;
-}
-
-/* Restore the cleanup chain from a previously saved chain.  */
-void
-restore_cleanups (struct cleanup *chain)
-{
-  restore_my_cleanups (&cleanup_chain, chain);
-}
-
-void
-restore_final_cleanups (struct cleanup *chain)
-{
-  restore_my_cleanups (&final_cleanup_chain, chain);
-}
-
-void
-restore_my_cleanups (struct cleanup **pmy_chain, struct cleanup *chain)
-{
-  *pmy_chain = chain;
+  return make_cleanup (do_free_so, so);
 }
 
 /* This function is useful for cleanups.
@@ -632,18 +479,6 @@ free_current_contents (void *ptr)
       xfree (*location);
       *location = NULL;
     }
-}
-
-/* Provide a known function that does nothing, to use as a base for
-   a possibly long chain of cleanups.  This is useful where we
-   use the cleanup chain for handling normal cleanups as well as dealing
-   with cleanups that need to be done as a result of a call to error().
-   In such cases, we may not be certain where the first cleanup is, unless
-   we have a do-nothing one to always use as the base.  */
-
-void
-null_cleanup (void *arg)
-{
 }
 
 /* If nonzero, display time usage both at startup and for each command.  */
@@ -886,7 +721,7 @@ can_dump_core (const char *reason)
 const char internal_problem_ask[] = "ask";
 const char internal_problem_yes[] = "yes";
 const char internal_problem_no[] = "no";
-static const char *internal_problem_modes[] =
+static const char *const internal_problem_modes[] =
 {
   internal_problem_ask,
   internal_problem_yes,
@@ -970,7 +805,7 @@ internal_vproblem (struct internal_problem *problem,
       /* Default (yes/batch case) is to quit GDB.  When in batch mode
 	 this lessens the likelihood of GDB going into an infinite
 	 loop.  */
-      if (caution == 0)
+      if (!confirm)
         {
           /* Emit the message and quit.  */
           fputs_unfiltered (reason, gdb_stderr);
@@ -1384,7 +1219,7 @@ defaulted_query (const char *ctlstr, const char defchar, va_list args)
 
   /* Automatically answer the default value if the user did not want
      prompts or the command was issued with the server prefix.  */
-  if (! caution || server_command)
+  if (!confirm || server_command)
     return def_value;
 
   /* If input isn't coming from the user directly, just say what
@@ -2589,7 +2424,7 @@ print_spaces_filtered (int n, struct ui_file *stream)
    demangling is off, the name is printed in its "raw" form.  */
 
 void
-fprintf_symbol_filtered (struct ui_file *stream, char *name,
+fprintf_symbol_filtered (struct ui_file *stream, const char *name,
 			 enum language lang, int arg_mode)
 {
   char *demangled;
@@ -3802,6 +3637,73 @@ producer_is_gcc_ge_4 (const char *producer)
   return minor;
 }
 
+/* Helper for make_cleanup_free_char_ptr_vec.  */
+
+static void
+do_free_char_ptr_vec (void *arg)
+{
+  VEC (char_ptr) *char_ptr_vec = arg;
+
+  free_char_ptr_vec (char_ptr_vec);
+}
+
+/* Make cleanup handler calling xfree for each element of CHAR_PTR_VEC and
+   final VEC_free for CHAR_PTR_VEC itself.
+
+   You must not modify CHAR_PTR_VEC after this cleanup registration as the
+   CHAR_PTR_VEC base address may change on its updates.  Contrary to VEC_free
+   this function does not (cannot) clear the pointer.  */
+
+struct cleanup *
+make_cleanup_free_char_ptr_vec (VEC (char_ptr) *char_ptr_vec)
+{
+  return make_cleanup (do_free_char_ptr_vec, char_ptr_vec);
+}
+
+/* Substitute all occurences of string FROM by string TO in *STRINGP.  *STRINGP
+   must come from xrealloc-compatible allocator and it may be updated.  FROM
+   needs to be delimited by IS_DIR_SEPARATOR or DIRNAME_SEPARATOR (or be
+   located at the start or end of *STRINGP.  */
+
+void
+substitute_path_component (char **stringp, const char *from, const char *to)
+{
+  char *string = *stringp, *s;
+  const size_t from_len = strlen (from);
+  const size_t to_len = strlen (to);
+
+  for (s = string;;)
+    {
+      s = strstr (s, from);
+      if (s == NULL)
+	break;
+
+      if ((s == string || IS_DIR_SEPARATOR (s[-1])
+	   || s[-1] == DIRNAME_SEPARATOR)
+          && (s[from_len] == '\0' || IS_DIR_SEPARATOR (s[from_len])
+	      || s[from_len] == DIRNAME_SEPARATOR))
+	{
+	  char *string_new;
+
+	  string_new = xrealloc (string, (strlen (string) + to_len + 1));
+
+	  /* Relocate the current S pointer.  */
+	  s = s - string + string_new;
+	  string = string_new;
+
+	  /* Replace from by to.  */
+	  memmove (&s[to_len], &s[from_len], strlen (&s[from_len]) + 1);
+	  memcpy (s, to, to_len);
+
+	  s += to_len;
+	}
+      else
+	s++;
+    }
+
+  *stringp = string;
+}
+
 #ifdef HAVE_WAITPID
 
 #ifdef SIGALRM
@@ -3873,6 +3775,49 @@ wait_to_die_with_timeout (pid_t pid, int *status, int timeout)
 }
 
 #endif /* HAVE_WAITPID */
+
+/* Provide fnmatch compatible function for FNM_FILE_NAME matching of host files.
+   Both FNM_FILE_NAME and FNM_NOESCAPE must be set in FLAGS.
+
+   It handles correctly HAVE_DOS_BASED_FILE_SYSTEM and
+   HAVE_CASE_INSENSITIVE_FILE_SYSTEM.  */
+
+int
+gdb_filename_fnmatch (const char *pattern, const char *string, int flags)
+{
+  gdb_assert ((flags & FNM_FILE_NAME) != 0);
+
+  /* It is unclear how '\' escaping vs. directory separator should coexist.  */
+  gdb_assert ((flags & FNM_NOESCAPE) != 0);
+
+#ifdef HAVE_DOS_BASED_FILE_SYSTEM
+  {
+    char *pattern_slash, *string_slash;
+
+    /* Replace '\' by '/' in both strings.  */
+
+    pattern_slash = alloca (strlen (pattern) + 1);
+    strcpy (pattern_slash, pattern);
+    pattern = pattern_slash;
+    for (; *pattern_slash != 0; pattern_slash++)
+      if (IS_DIR_SEPARATOR (*pattern_slash))
+	*pattern_slash = '/';
+
+    string_slash = alloca (strlen (string) + 1);
+    strcpy (string_slash, string);
+    string = string_slash;
+    for (; *string_slash != 0; string_slash++)
+      if (IS_DIR_SEPARATOR (*string_slash))
+	*string_slash = '/';
+  }
+#endif /* HAVE_DOS_BASED_FILE_SYSTEM */
+
+#ifdef HAVE_CASE_INSENSITIVE_FILE_SYSTEM
+  flags |= FNM_CASEFOLD;
+#endif /* HAVE_CASE_INSENSITIVE_FILE_SYSTEM */
+
+  return fnmatch (pattern, string, flags);
+}
 
 /* Provide a prototype to silence -Wmissing-prototypes.  */
 extern initialize_file_ftype _initialize_utils;

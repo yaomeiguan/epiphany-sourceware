@@ -2,7 +2,7 @@
 		capability class to the appropriate values.
 
    Copyright 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008,
-   2009, 2010, 2011 Red Hat, Inc.
+   2009, 2010, 2011, 2012 Red Hat, Inc.
 
 This file is part of Cygwin.
 
@@ -37,6 +37,7 @@ wincaps wincap_2000 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:false,
   has_gaa_prefixes:false,
   has_gaa_on_link_prefix:false,
+  has_gaa_largeaddress_bug:false,
   supports_all_posix_ai_flags:false,
   has_restricted_stack_args:false,
   has_transactions:false,
@@ -53,6 +54,8 @@ wincaps wincap_2000 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:false,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:false,
+  kernel_is_always_casesensitive:true,
 };
 
 wincaps wincap_2000sp4 __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -69,6 +72,7 @@ wincaps wincap_2000sp4 __attribute__((section (".cygwin_dll_common"), shared)) =
   has_recycle_dot_bin:false,
   has_gaa_prefixes:false,
   has_gaa_on_link_prefix:false,
+  has_gaa_largeaddress_bug:false,
   supports_all_posix_ai_flags:false,
   has_restricted_stack_args:false,
   has_transactions:false,
@@ -85,6 +89,8 @@ wincaps wincap_2000sp4 __attribute__((section (".cygwin_dll_common"), shared)) =
   has_stack_size_param_is_a_reservation:false,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:false,
+  kernel_is_always_casesensitive:true,
 };
 
 wincaps wincap_xp __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -101,6 +107,7 @@ wincaps wincap_xp __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:false,
   has_gaa_prefixes:false,
   has_gaa_on_link_prefix:false,
+  has_gaa_largeaddress_bug:false,
   supports_all_posix_ai_flags:false,
   has_restricted_stack_args:false,
   has_transactions:false,
@@ -117,6 +124,8 @@ wincaps wincap_xp __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:true,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:false,
+  kernel_is_always_casesensitive:false,
 };
 
 wincaps wincap_xpsp1 __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -133,6 +142,7 @@ wincaps wincap_xpsp1 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:false,
   has_gaa_prefixes:true,
   has_gaa_on_link_prefix:false,
+  has_gaa_largeaddress_bug:false,
   supports_all_posix_ai_flags:false,
   has_restricted_stack_args:false,
   has_transactions:false,
@@ -149,6 +159,8 @@ wincaps wincap_xpsp1 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:true,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:false,
+  kernel_is_always_casesensitive:false,
 };
 
 wincaps wincap_xpsp2 __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -165,6 +177,7 @@ wincaps wincap_xpsp2 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:false,
   has_gaa_prefixes:true,
   has_gaa_on_link_prefix:false,
+  has_gaa_largeaddress_bug:false,
   supports_all_posix_ai_flags:false,
   has_restricted_stack_args:false,
   has_transactions:false,
@@ -181,6 +194,8 @@ wincaps wincap_xpsp2 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:true,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:false,
+  kernel_is_always_casesensitive:false,
 };
 
 wincaps wincap_2003 __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -197,6 +212,7 @@ wincaps wincap_2003 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:false,
   has_gaa_prefixes:true,
   has_gaa_on_link_prefix:false,
+  has_gaa_largeaddress_bug:false,
   supports_all_posix_ai_flags:false,
   has_restricted_stack_args:true,
   has_transactions:false,
@@ -213,6 +229,8 @@ wincaps wincap_2003 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:true,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:true,
+  has_program_compatibility_assistant:false,
+  kernel_is_always_casesensitive:false,
 };
 
 wincaps wincap_vista __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -229,6 +247,7 @@ wincaps wincap_vista __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:true,
   has_gaa_prefixes:true,
   has_gaa_on_link_prefix:true,
+  has_gaa_largeaddress_bug:true,
   supports_all_posix_ai_flags:true,
   has_restricted_stack_args:false,
   has_transactions:true,
@@ -245,6 +264,8 @@ wincaps wincap_vista __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:true,
   has_console_logon_sid:false,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:true,
+  kernel_is_always_casesensitive:false,
 };
 
 wincaps wincap_7 __attribute__((section (".cygwin_dll_common"), shared)) = {
@@ -261,6 +282,7 @@ wincaps wincap_7 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_recycle_dot_bin:true,
   has_gaa_prefixes:true,
   has_gaa_on_link_prefix:true,
+  has_gaa_largeaddress_bug:true,
   supports_all_posix_ai_flags:true,
   has_restricted_stack_args:false,
   has_transactions:true,
@@ -277,6 +299,43 @@ wincaps wincap_7 __attribute__((section (".cygwin_dll_common"), shared)) = {
   has_stack_size_param_is_a_reservation:true,
   has_console_logon_sid:true,
   wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:true,
+  kernel_is_always_casesensitive:false,
+};
+
+wincaps wincap_8 __attribute__((section (".cygwin_dll_common"), shared)) = {
+  max_sys_priv:SE_CREATE_SYMBOLIC_LINK_PRIVILEGE,
+  is_server:false,
+  has_physical_mem_access:false,
+  has_create_global_privilege:true,
+  has_ioctl_storage_get_media_types_ex:true,
+  has_disk_ex_ioctls:true,
+  has_buggy_restart_scan:false,
+  has_mandatory_integrity_control:true,
+  needs_logon_sid_in_sid_list:false,
+  needs_count_in_si_lpres2:false,
+  has_recycle_dot_bin:true,
+  has_gaa_prefixes:true,
+  has_gaa_on_link_prefix:true,
+  has_gaa_largeaddress_bug:false,
+  supports_all_posix_ai_flags:true,
+  has_restricted_stack_args:false,
+  has_transactions:true,
+  has_recvmsg:true,
+  has_sendmsg:true,
+  has_broken_udf:false,
+  has_console_handle_problem:true,
+  has_broken_alloc_console:true,
+  has_always_all_codepages:true,
+  has_localenames:true,
+  has_fast_cwd:true,
+  has_restricted_raw_disk_access:true,
+  use_dont_resolve_hack:false,
+  has_stack_size_param_is_a_reservation:true,
+  has_console_logon_sid:true,
+  wow64_has_secondary_stack:false,
+  has_program_compatibility_assistant:true,
+  kernel_is_always_casesensitive:false,
 };
 
 wincapc wincap __attribute__((section (".cygwin_dll_common"), shared));
@@ -288,68 +347,51 @@ wincapc::init ()
     return;		// already initialized
 
   GetSystemInfo (&system_info);
-  memset (&version, 0, sizeof version);
   version.dwOSVersionInfoSize = sizeof (OSVERSIONINFOEX);
-  if (!GetVersionEx (reinterpret_cast<LPOSVERSIONINFO>(&version)))
-    api_fatal ("Cygwin requires at least Windows 2000.");
+  GetVersionEx (reinterpret_cast<LPOSVERSIONINFO>(&version));
 
-  switch (version.dwPlatformId)
+  switch (version.dwMajorVersion)
     {
-      case VER_PLATFORM_WIN32_NT:
-	switch (version.dwMajorVersion)
+      case 5:
+	switch (version.dwMinorVersion)
 	  {
-	    case 4:
-	      /* I'd be very surprised if this code is ever hit, but it doesn't
-		 hurt to keep it. */
-	      api_fatal ("Cygwin requires at least Windows 2000.");
+	    case 0:
+	      if (version.wServicePackMajor < 4)
+		caps = &wincap_2000;
+	      else
+		caps = &wincap_2000sp4;
 	      break;
-	    case 5:
-	      switch (version.dwMinorVersion)
+
+	    case 1:
+	      caps = &wincap_xp;
+	      switch (version.wServicePackMajor)
 		{
-		  case 0:
-		    if (version.wServicePackMajor < 4)
-		      caps = &wincap_2000;
-		    else
-		      caps = &wincap_2000sp4;
-		    break;
-
-		  case 1:
-		    caps = &wincap_xp;
-		    switch (version.wServicePackMajor)
-		      {
-		      case 0:
-			caps = &wincap_xp;
-		      case 1:
-			caps = &wincap_xpsp1;
-		      default:
-			caps = &wincap_xpsp2;
-		      }
-		    break;
-
-		  default:
-		    caps = &wincap_2003;
+		case 0:
+		  caps = &wincap_xp;
+		case 1:
+		  caps = &wincap_xpsp1;
+		default:
+		  caps = &wincap_xpsp2;
 		}
 	      break;
-	    case 6:
-	      switch (version.dwMinorVersion)
-		{
-		  case 0:
-		    caps = &wincap_vista;
-		    break;
-		  default:
-		    caps = &wincap_7;
-		    break;
-		}
-	      break;
+
 	    default:
-	      caps = &wincap_minimal;
-	      break;
+	      caps = &wincap_2003;
 	  }
 	break;
-      case VER_PLATFORM_WIN32_WINDOWS:
-	/* I'd be very surprised if this code is ever hit, but it doesn't
-	   hurt to keep it. */
-	api_fatal ("Windows 95/98/Me are not supported.");
+      case 6:
+	switch (version.dwMinorVersion)
+	  {
+	    case 0:
+	      caps = &wincap_vista;
+	      break;
+	    case 1:
+	      caps = &wincap_7;
+	      break;
+	    default:
+	      caps = &wincap_8;
+	      break;
+	  }
 	break;
       default:
 	caps = &wincap_minimal;
@@ -365,6 +407,7 @@ wincapc::init ()
       ((wincaps *)caps)->needs_count_in_si_lpres2 = false;
       ((wincaps *)caps)->has_restricted_stack_args = false;
       ((wincaps *)caps)->wow64_has_secondary_stack = false;
+      ((wincaps *)caps)->has_gaa_largeaddress_bug = false;
     }
 
   __small_sprintf (osnam, "NT-%d.%d", version.dwMajorVersion,

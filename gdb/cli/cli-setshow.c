@@ -170,39 +170,36 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
 #endif
 	    *q++ = '\0';
 	    new = (char *) xrealloc (new, q - new);
-	    if (*(char **) c->var != NULL)
-	      xfree (*(char **) c->var);
+	    xfree (*(char **) c->var);
 	    *(char **) c->var = new;
 	  }
 	  break;
 	case var_string_noescape:
 	  if (arg == NULL)
 	    arg = "";
-	  if (*(char **) c->var != NULL)
-	    xfree (*(char **) c->var);
-	  *(char **) c->var = xstrdup (arg);
-	  break;
-	case var_optional_filename:
-	  if (arg == NULL)
-	    arg = "";
-	  if (*(char **) c->var != NULL)
-	    xfree (*(char **) c->var);
+	  xfree (*(char **) c->var);
 	  *(char **) c->var = xstrdup (arg);
 	  break;
 	case var_filename:
 	  if (arg == NULL)
 	    error_no_arg (_("filename to set it to."));
-	  if (*(char **) c->var != NULL)
-	    xfree (*(char **) c->var);
-	  {
-	    /* Clear trailing whitespace of filename.  */
-	    char *ptr = arg + strlen (arg) - 1;
+	  /* FALLTHROUGH */
+	case var_optional_filename:
+	  xfree (*(char **) c->var);
 
-	    while (ptr >= arg && (*ptr == ' ' || *ptr == '\t'))
-	      ptr--;
-	    *(ptr + 1) = '\0';
-	  }
-	  *(char **) c->var = tilde_expand (arg);
+	  if (arg != NULL)
+	    {
+	      /* Clear trailing whitespace of filename.  */
+	      char *ptr = arg + strlen (arg) - 1;
+
+	      while (ptr >= arg && (*ptr == ' ' || *ptr == '\t'))
+		ptr--;
+	      *(ptr + 1) = '\0';
+
+	      *(char **) c->var = tilde_expand (arg);
+	    }
+	  else
+	    *(char **) c->var = xstrdup ("");
 	  break;
 	case var_boolean:
 	  *(int *) c->var = parse_binary_operation (arg);
@@ -211,20 +208,22 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
 	  *(enum auto_boolean *) c->var = parse_auto_binary_operation (arg);
 	  break;
 	case var_uinteger:
+	case var_zuinteger:
 	  if (arg == NULL)
 	    error_no_arg (_("integer to set it to."));
 	  *(unsigned int *) c->var = parse_and_eval_long (arg);
-	  if (*(unsigned int *) c->var == 0)
+	  if (c->var_type == var_uinteger && *(unsigned int *) c->var == 0)
 	    *(unsigned int *) c->var = UINT_MAX;
 	  break;
 	case var_integer:
+	case var_zinteger:
 	  {
 	    unsigned int val;
 
 	    if (arg == NULL)
 	      error_no_arg (_("integer to set it to."));
 	    val = parse_and_eval_long (arg);
-	    if (val == 0)
+	    if (val == 0 && c->var_type == var_integer)
 	      *(int *) c->var = INT_MAX;
 	    else if (val >= INT_MAX)
 	      error (_("integer %u out of range"), val);
@@ -232,16 +231,6 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
 	      *(int *) c->var = val;
 	    break;
 	  }
-	case var_zinteger:
-	  if (arg == NULL)
-	    error_no_arg (_("integer to set it to."));
-	  *(int *) c->var = parse_and_eval_long (arg);
-	  break;
-	case var_zuinteger:
-	  if (arg == NULL)
-	    error_no_arg (_("integer to set it to."));
-	  *(unsigned int *) c->var = parse_and_eval_long (arg);
-	  break;
 	case var_enum:
 	  {
 	    int i;
@@ -314,10 +303,10 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
   else if (c->type == show_cmd)
     {
       struct cleanup *old_chain;
-      struct ui_stream *stb;
+      struct ui_file *stb;
 
-      stb = ui_out_stream_new (uiout);
-      old_chain = make_cleanup_ui_out_stream_delete (stb);
+      stb = mem_fileopen ();
+      old_chain = make_cleanup_ui_file_delete (stb);
 
       /* Possibly call the pre hook.  */
       if (c->pre_show_hook)
@@ -327,29 +316,29 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
 	{
 	case var_string:
 	  if (*(char **) c->var)
-	    fputstr_filtered (*(char **) c->var, '"', stb->stream);
+	    fputstr_filtered (*(char **) c->var, '"', stb);
 	  break;
 	case var_string_noescape:
 	case var_optional_filename:
 	case var_filename:
 	case var_enum:
 	  if (*(char **) c->var)
-	    fputs_filtered (*(char **) c->var, stb->stream);
+	    fputs_filtered (*(char **) c->var, stb);
 	  break;
 	case var_boolean:
-	  fputs_filtered (*(int *) c->var ? "on" : "off", stb->stream);
+	  fputs_filtered (*(int *) c->var ? "on" : "off", stb);
 	  break;
 	case var_auto_boolean:
 	  switch (*(enum auto_boolean*) c->var)
 	    {
 	    case AUTO_BOOLEAN_TRUE:
-	      fputs_filtered ("on", stb->stream);
+	      fputs_filtered ("on", stb);
 	      break;
 	    case AUTO_BOOLEAN_FALSE:
-	      fputs_filtered ("off", stb->stream);
+	      fputs_filtered ("off", stb);
 	      break;
 	    case AUTO_BOOLEAN_AUTO:
-	      fputs_filtered ("auto", stb->stream);
+	      fputs_filtered ("auto", stb);
 	      break;
 	    default:
 	      internal_error (__FILE__, __LINE__,
@@ -362,17 +351,17 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
 	case var_zuinteger:
 	  if (c->var_type == var_uinteger
 	      && *(unsigned int *) c->var == UINT_MAX)
-	    fputs_filtered ("unlimited", stb->stream);
+	    fputs_filtered ("unlimited", stb);
 	  else
-	    fprintf_filtered (stb->stream, "%u", *(unsigned int *) c->var);
+	    fprintf_filtered (stb, "%u", *(unsigned int *) c->var);
 	  break;
 	case var_integer:
 	case var_zinteger:
 	  if (c->var_type == var_integer
 	      && *(int *) c->var == INT_MAX)
-	    fputs_filtered ("unlimited", stb->stream);
+	    fputs_filtered ("unlimited", stb);
 	  else
-	    fprintf_filtered (stb->stream, "%d", *(int *) c->var);
+	    fprintf_filtered (stb, "%d", *(int *) c->var);
 	  break;
 
 	default:
@@ -389,7 +378,7 @@ do_setshow_command (char *arg, int from_tty, struct cmd_list_element *c)
 	ui_out_field_stream (uiout, "value", stb);
       else
 	{
-	  char *value = ui_file_xstrdup (stb->stream, NULL);
+	  char *value = ui_file_xstrdup (stb, NULL);
 
 	  make_cleanup (xfree, value);
 	  if (c->show_value_func != NULL)

@@ -47,6 +47,7 @@
 #include "gdbthread.h"
 #include "python/python.h"
 #include "interps.h"
+#include "observer.h"
 
 /* readline include files.  */
 #include "readline/readline.h"
@@ -98,11 +99,13 @@ int use_windows = 0;
 
 extern char lang_frame_mismatch_warn[];		/* language.c */
 
-/* Flag for whether we want all the "from_tty" gubbish printed.  */
+/* Flag for whether we want to confirm potentially dangerous
+   operations.  Default is yes.  */
 
-int caution = 1;		/* Default is yes, sigh.  */
+int confirm = 1;
+
 static void
-show_caution (struct ui_file *file, int from_tty,
+show_confirm (struct ui_file *file, int from_tty,
 	      struct cmd_list_element *c, const char *value)
 {
   fprintf_filtered (file, _("Whether to confirm potentially "
@@ -289,9 +292,9 @@ void (*deprecated_context_hook) (int id);
 /* static */ void
 quit_cover (void)
 {
-  caution = 0;			/* Throw caution to the wind -- we're exiting.
-				   This prevents asking the user dumb 
-				   questions.  */
+  /* Stop asking user for confirmation --- we're exiting.  This
+     prevents asking the user dumb questions.  */
+  confirm = 0;
   quit_command ((char *) 0, 0);
 }
 #endif /* defined SIGHUP */
@@ -468,16 +471,17 @@ execute_command (char *p, int from_tty)
       if (c->flags & DEPRECATED_WARN_USER)
 	deprecated_cmd_warning (&line);
 
-      if (c->class == class_user)
+      /* c->user_commands would be NULL in the case of a python command.  */
+      if (c->class == class_user && c->user_commands)
 	execute_user_command (c, arg);
       else if (c->type == set_cmd || c->type == show_cmd)
-	do_setshow_command (arg, from_tty & caution, c);
+	do_setshow_command (arg, from_tty, c);
       else if (!cmd_func_p (c))
 	error (_("That is not a command, just a help topic."));
       else if (deprecated_call_command_hook)
-	deprecated_call_command_hook (c, arg, from_tty & caution);
+	deprecated_call_command_hook (c, arg, from_tty);
       else
-	cmd_func (c, arg, from_tty & caution);
+	cmd_func (c, arg, from_tty);
 
       /* If the interpreter is in sync mode (we're running a user
 	 command's list, running command hooks or similars), and we
@@ -1294,8 +1298,8 @@ quit_target (void *arg)
   if (write_history_p && history_filename)
     write_history (history_filename);
 
-  do_final_cleanups (ALL_CLEANUPS);    /* Do any final cleanups before
-					  exiting.  */
+  do_final_cleanups (all_cleanups ());    /* Do any final cleanups before
+					     exiting.  */
   return 0;
 }
 
@@ -1556,6 +1560,15 @@ show_exec_done_display_p (struct ui_file *file, int from_tty,
 			    "asynchronous execution commands is %s.\n"),
 		    value);
 }
+
+/* "set" command for the gdb_datadir configuration variable.  */
+
+static void
+set_gdb_datadir (char *args, int from_tty, struct cmd_list_element *c)
+{
+  observer_notify_gdb_datadir_changed ();
+}
+
 static void
 init_main (void)
 {
@@ -1633,11 +1646,11 @@ Show the filename in which to record the command history"), _("\
 			    show_history_filename,
 			    &sethistlist, &showhistlist);
 
-  add_setshow_boolean_cmd ("confirm", class_support, &caution, _("\
+  add_setshow_boolean_cmd ("confirm", class_support, &confirm, _("\
 Set whether to confirm potentially dangerous operations."), _("\
 Show whether to confirm potentially dangerous operations."), NULL,
 			   NULL,
-			   show_caution,
+			   show_confirm,
 			   &setlist, &showlist);
 
   add_setshow_zinteger_cmd ("annotate", class_obscure, &annotation_level, _("\
@@ -1663,7 +1676,7 @@ Use \"on\" to enable the notification, and \"off\" to disable it."),
                            _("Show GDB's data directory."),
                            _("\
 When set, GDB uses the specified path to search for data files."),
-                           NULL, NULL,
+                           set_gdb_datadir, NULL,
                            &setlist,
                            &showlist);
 }

@@ -988,8 +988,8 @@ compare_minimal_symbols (const void *fn1p, const void *fn2p)
   else
     /* addrs are equal: sort by name */
     {
-      char *name1 = SYMBOL_LINKAGE_NAME (fn1);
-      char *name2 = SYMBOL_LINKAGE_NAME (fn2);
+      const char *name1 = SYMBOL_LINKAGE_NAME (fn1);
+      const char *name2 = SYMBOL_LINKAGE_NAME (fn2);
 
       if (name1 && name2)	/* both have names */
 	return strcmp (name1, name2);
@@ -1167,6 +1167,13 @@ install_minimal_symbols (struct objfile *objfile)
 
   if (msym_count > 0)
     {
+      if (symtab_create_debug)
+	{
+	  fprintf_unfiltered (gdb_stdlog,
+			      "Installing %d minimal symbols of objfile %s.\n",
+			      msym_count, objfile->name);
+	}
+
       /* Allocate enough space in the obstack, into which we will gather the
          bunches of new and existing minimal symbols, sort them, and then
          compact out the duplicate entries.  Once we have a final table,

@@ -76,10 +76,6 @@ struct lwp_info
   /* Non-zero if we were stepping this LWP.  */
   int step;
 
-  /* Non-zero si_signo if this LWP stopped with a trap.  si_addr may
-     be the address of a hardware watchpoint.  */
-  struct siginfo siginfo;
-
   /* STOPPED_BY_WATCHPOINT is non-zero if this LWP stopped with a data
      watchpoint trap.  */
   int stopped_by_watchpoint;
@@ -158,6 +154,12 @@ struct lwp_info *iterate_over_lwps (ptid_t filter,
 						     void *), 
 				    void *data);
 
+typedef int (*linux_nat_iterate_watchpoint_lwps_ftype) (struct lwp_info *lwp,
+							void *arg);
+
+extern void linux_nat_iterate_watchpoint_lwps
+  (linux_nat_iterate_watchpoint_lwps_ftype callback, void *callback_data);
+
 /* Create a prototype generic GNU/Linux target.  The client can
    override it with local methods.  */
 struct target_ops * linux_target (void);
@@ -178,7 +180,7 @@ void linux_nat_set_new_thread (struct target_ops *, void (*) (struct lwp_info *)
    that ptrace returns, and the layout in the architecture of the
    inferior.  */
 void linux_nat_set_siginfo_fixup (struct target_ops *,
-				  int (*) (struct siginfo *,
+				  int (*) (siginfo_t *,
 					   gdb_byte *,
 					   int));
 
@@ -191,11 +193,10 @@ void linux_nat_set_prepare_to_resume (struct target_ops *,
    to another.  */
 void linux_nat_switch_fork (ptid_t new_ptid);
 
-/* Return the saved siginfo associated with PTID.  */
-struct siginfo *linux_nat_get_siginfo (ptid_t ptid);
-
-/* Compute and return the processor core of a given thread.  */
-int linux_nat_core_of_thread_1 (ptid_t ptid);
+/* Store the saved siginfo associated with PTID in *SIGINFO.
+   Return 1 if it was retrieved successfully, 0 otherwise (*SIGINFO is
+   uninitialized in such case).  */
+int linux_nat_get_siginfo (ptid_t ptid, siginfo_t *siginfo);
 
 /* Set alternative SIGTRAP-like events recognizer.  */
 void linux_nat_set_status_is_event (struct target_ops *t,

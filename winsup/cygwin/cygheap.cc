@@ -1,7 +1,7 @@
 /* cygheap.cc: Cygwin heap manager.
 
    Copyright 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-   2010, 2011 Red Hat, Inc.
+   2010, 2011, 2012 Red Hat, Inc.
 
    This file is part of Cygwin.
 
@@ -23,6 +23,8 @@
 #include "heap.h"
 #include "sigproc.h"
 #include "pinfo.h"
+#include "registry.h"
+#include "ntdll.h"
 #include <unistd.h>
 #include <wchar.h>
 
@@ -89,23 +91,6 @@ cygheap_fixup_in_child (bool execed)
     }
 }
 
-int
-init_cygheap::manage_console_count (const char *something, int amount, bool avoid_freeing_console)
-{
-  if (console_count == 0 && amount > 0)
-    init_console_handler (true);
-  console_count += amount;
-  debug_printf ("%s: console_count %d, amount %d, %s, avoid_freeing_console %d",
-		something, console_count, amount, myctty (), avoid_freeing_console);
-  if (!avoid_freeing_console && amount <= 0 && !console_count && myself->ctty == -1)
-    {
-      BOOL res = FreeConsole ();
-      debug_printf ("freed console, res %d", res);
-      init_console_handler (false);
-    }
-  return console_count;
-}
-
 void
 init_cygheap::close_ctty ()
 {
@@ -153,6 +138,100 @@ _csbrk (int sbs)
     }
 
   return prebrk;
+}
+
+/* Use absolute path of cygwin1.dll to derive the Win32 dir which
+   is our installation_root.  Note that we can't handle Cygwin installation
+   root dirs of more than 4K path length.  I assume that's ok...
+
+   This function also generates the installation_key value.  It's a 64 bit
+   hash value based on the path of the Cygwin DLL itself.  It's subsequently
+   used when generating shared object names.  Thus, different Cygwin
+   installations generate different object names and so are isolated from
+   each other.
+
+   Having this information, the installation key together with the
+   installation root path is written to the registry.  The idea is that
+   cygcheck can print the paths into which the Cygwin DLL has been
+   installed for debugging purposes.
+
+   Last but not least, the new cygwin properties datastrcuture is checked
+   for the "disabled_key" value, which is used to determine whether the
+   installation key is actually added to all object names or not.  This is
+   used as a last resort for debugging purposes, usually.  However, there
+   could be another good reason to re-enable object name collisions between
+   multiple Cygwin DLLs, which we're just not aware of right now.  Cygcheck
+   can be used to change the value in an existing Cygwin DLL binary. */
+void
+init_cygheap::init_installation_root ()
+{
+  if (!GetModuleFileNameW (cygwin_hmodule, installation_root, PATH_MAX))
+    api_fatal ("Can't initialize Cygwin installation root dir.\n"
+	       "GetModuleFileNameW(%p, %p, %u), %E",
+	       cygwin_hmodule, installation_root, PATH_MAX);
+  PWCHAR p = installation_root;
+  if (wcsncasecmp (p, L"\\\\", 2))	/* Normal drive letter path */
+    {
+      p = wcpcpy (p, L"\\??\\");
+      GetModuleFileNameW (cygwin_hmodule, p, PATH_MAX - 4);
+    }
+  else
+    {
+      bool unc = false;
+      if (wcsncmp (p + 2, L"?\\", 2))	/* No long path prefix, so UNC path. */
+	{
+	  p = wcpcpy (p, L"\\??\\UN");
+	  GetModuleFileNameW (cygwin_hmodule, p, PATH_MAX - 6);
+	  *p = L'C';
+	  unc = true;
+	}
+      else if (!wcsncmp (p + 4, L"UNC\\", 4)) /* Native NT UNC path. */
+	unc = true;
+      if (unc)
+	{
+	  p = wcschr (p + 2, L'\\');    /* Skip server name */
+	  if (p)
+	    p = wcschr (p + 1, L'\\');  /* Skip share name */
+	}
+    }
+  installation_root[1] = L'?';
+
+  RtlInitEmptyUnicodeString (&installation_key, installation_key_buf,
+			     sizeof installation_key_buf);
+  RtlInt64ToHexUnicodeString (hash_path_name (0, installation_root),
+			      &installation_key, FALSE);
+
+  PWCHAR w = wcsrchr (installation_root, L'\\');
+  if (w)
+    {
+      *w = L'\0';
+      w = wcsrchr (installation_root, L'\\');
+    }
+  if (!w)
+    api_fatal ("Can't initialize Cygwin installation root dir.\n"
+	       "Invalid DLL path");
+  /* If w < p, the Cygwin DLL resides in the root dir of a drive or network
+     path.  In that case, if we strip off yet another backslash, the path
+     becomes invalid.  We avoid that here so that the DLL also works in this
+     scenario.  The /usr/bin and /usr/lib default mounts will probably point
+     to something non-existing, but that's life. */
+  if (w > p)
+    *w = L'\0';
+
+  for (int i = 1; i >= 0; --i)
+    {
+      reg_key r (i, KEY_WRITE, _WIDE (CYGWIN_INFO_INSTALLATIONS_NAME),
+		 NULL);
+      if (NT_SUCCESS (r.set_string (installation_key_buf,
+				    installation_root)))
+	break;
+    }
+
+  if (cygwin_props.disable_key)
+    {
+      installation_key.Length = 0;
+      installation_key.Buffer[0] = L'\0';
+    }
 }
 
 void __stdcall

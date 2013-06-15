@@ -105,6 +105,12 @@
 #define yygindex pascal_yygindex
 #define yytable	 pascal_yytable
 #define yycheck	 pascal_yycheck
+#define yyss	pascal_yyss
+#define yysslim	pascal_yysslim
+#define yyssp	pascal_yyssp
+#define yystacksize pascal_yystacksize
+#define yyvs	pascal_yyvs
+#define yyvsp	pascal_yyvsp
 
 #ifndef YYDEBUG
 #define	YYDEBUG 1		/* Default to yydebug support */
@@ -338,7 +344,7 @@ exp	:	field_exp COMPLETE
 
 exp	:	exp '['
 			/* We need to save the current_type value.  */
-			{ char *arrayname;
+			{ const char *arrayname;
 			  int arrayfieldindex;
 			  arrayfieldindex = is_pascal_string_type (
 				current_type, NULL, NULL,

@@ -19,6 +19,8 @@
 #if !defined (COMMAND_H)
 #define COMMAND_H 1
 
+#include "gdb_vecs.h"
+
 /* This file defines the public interface for any code wanting to
    create commands.  */
 
@@ -91,7 +93,7 @@ typedef enum var_types
     /* String which stores a filename.  (*VAR) is a malloc'd
        string.  */
     var_filename,
-    /* ZeroableInteger.  *VAR is an int.  Like Unsigned Integer except
+    /* ZeroableInteger.  *VAR is an int.  Like var_integer except
        that zero really means zero.  */
     var_zinteger,
     /* ZeroableUnsignedInteger.  *VAR is an unsigned int.  Zero really
@@ -149,9 +151,10 @@ typedef void cmd_sfunc_ftype (char *args, int from_tty,
 extern void set_cmd_sfunc (struct cmd_list_element *cmd,
 			   cmd_sfunc_ftype *sfunc);
 
-extern void set_cmd_completer (struct cmd_list_element *,
-			       char **(*completer) (struct cmd_list_element *,
-						    char *, char *));
+typedef VEC (char_ptr) *completer_ftype (struct cmd_list_element *,
+					 char *, char *);
+
+extern void set_cmd_completer (struct cmd_list_element *, completer_ftype *);
 
 /* HACK: cagney/2002-02-23: Code, mostly in tracepoints.c, grubs
    around in cmd objects to test the value of the commands sfunc().  */
@@ -208,11 +211,11 @@ extern struct cmd_list_element *add_info (char *,
 
 extern struct cmd_list_element *add_info_alias (char *, char *, int);
 
-extern char **complete_on_cmdlist (struct cmd_list_element *,
-				   char *, char *);
+extern VEC (char_ptr) *complete_on_cmdlist (struct cmd_list_element *,
+					    char *, char *);
 
-extern char **complete_on_enum (const char *enumlist[],
-				char *, char *);
+extern VEC (char_ptr) *complete_on_enum (const char *const *enumlist,
+					 char *, char *);
 
 /* Functions that implement commands about CLI commands.  */
 
@@ -232,7 +235,7 @@ extern show_value_ftype deprecated_show_value_hack;
 
 extern void add_setshow_enum_cmd (char *name,
 				  enum command_class class,
-				  const char *enumlist[],
+				  const char *const *enumlist,
 				  const char **var,
 				  const char *set_doc,
 				  const char *show_doc,

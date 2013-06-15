@@ -46,6 +46,7 @@
 #include "exec.h"
 #include "auxv.h"
 #include "exceptions.h"
+#include "gdb_bfd.h"
 
 static struct link_map_offsets *svr4_fetch_link_map_offsets (void);
 static int svr4_have_link_map_offsets (void);
@@ -1260,6 +1261,14 @@ svr4_current_sos (void)
   int ignore_first;
   struct svr4_library_list library_list;
 
+  /* Fall back to manual examination of the target if the packet is not
+     supported or gdbserver failed to find DT_DEBUG.  gdb.server/solib-list.exp
+     tests a case where gdbserver cannot find the shared libraries list while
+     GDB itself is able to find it via SYMFILE_OBJFILE.
+
+     Unfortunately statically linked inferiors will also fall back through this
+     suboptimal code path.  */
+
   if (svr4_current_sos_via_xfer_libraries (&library_list))
     {
       if (library_list.main_lm)
@@ -1550,9 +1559,11 @@ enable_break (struct svr4_info *info, int from_tty)
 	goto bkpt_at_symbol;
 
       /* Now convert the TMP_BFD into a target.  That way target, as
-         well as BFD operations can be used.  Note that closing the
-         target will also close the underlying bfd.  */
+         well as BFD operations can be used.  */
       tmp_bfd_target = target_bfd_reopen (tmp_bfd);
+      /* target_bfd_reopen acquired its own reference, so we can
+         release ours now.  */
+      gdb_bfd_unref (tmp_bfd);
 
       /* On a running target, we can get the dynamic linker's base
          address from the shared library table.  */
@@ -1662,8 +1673,9 @@ enable_break (struct svr4_info *info, int from_tty)
 						       sym_addr,
 						       tmp_bfd_target);
 
-      /* We're done with both the temporary bfd and target.  Remember,
-         closing the target closes the underlying bfd.  */
+      /* We're done with both the temporary bfd and target.  Closing
+         the target closes the underlying bfd, because it holds the
+         only remaining reference.  */
       target_close (tmp_bfd_target, 0);
 
       if (sym_addr != 0)
@@ -1699,7 +1711,7 @@ enable_break (struct svr4_info *info, int from_tty)
 	}
     }
 
-  if (!current_inferior ()->attach_flag)
+  if (interp_name != NULL && !current_inferior ()->attach_flag)
     {
       for (bkpt_namep = bkpt_names; *bkpt_namep != NULL; bkpt_namep++)
 	{
@@ -2249,13 +2261,13 @@ svr4_solib_create_inferior_hook (int from_tty)
 
   clear_proceed_status ();
   inf->control.stop_soon = STOP_QUIETLY;
-  tp->suspend.stop_signal = TARGET_SIGNAL_0;
+  tp->suspend.stop_signal = GDB_SIGNAL_0;
   do
     {
       target_resume (pid_to_ptid (-1), 0, tp->suspend.stop_signal);
       wait_for_inferior ();
     }
-  while (tp->suspend.stop_signal != TARGET_SIGNAL_TRAP);
+  while (tp->suspend.stop_signal != GDB_SIGNAL_TRAP);
   inf->control.stop_soon = NO_STOP_QUIETLY;
 #endif /* defined(_SCO_DS) */
 }

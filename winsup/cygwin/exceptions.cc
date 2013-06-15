@@ -1,7 +1,7 @@
 /* exceptions.cc
 
    Copyright 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004,
-   2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc.
+   2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc.
 
 This file is part of Cygwin.
 
@@ -19,8 +19,8 @@ details. */
 #include <syslog.h>
 #include <wchar.h>
 
-#include "pinfo.h"
 #include "cygtls.h"
+#include "pinfo.h"
 #include "sigproc.h"
 #include "shared_info.h"
 #include "perprocess.h"
@@ -46,7 +46,6 @@ static BOOL WINAPI ctrl_c_handler (DWORD);
 /* This is set to indicate that we have already exited.  */
 
 static NO_COPY int exit_already = 0;
-static muto NO_COPY mask_sync;
 
 NO_COPY static struct
 {
@@ -280,21 +279,21 @@ stack_info::walk ()
 }
 
 void
-stackdump (DWORD ebp, int open_file, bool isexception)
+stackdump (DWORD ebp, PCONTEXT in, EXCEPTION_RECORD *e)
 {
   static bool already_dumped;
 
-  if (cygheap->rlim_core == 0UL || (open_file && already_dumped))
+  if (already_dumped || cygheap->rlim_core == 0Ul)
     return;
-
-  if (open_file)
-    open_stackdumpfile ();
-
   already_dumped = true;
+  open_stackdumpfile ();
+
+  if (e)
+    dump_exception (e, in);
 
   int i;
 
-  thestack.init (ebp, 1, !isexception);	/* Initialize from the input CONTEXT */
+  thestack.init (ebp, 1, !in);	/* Initialize from the input CONTEXT */
   small_printf ("Stack trace:\r\nFrame     Function  Args\r\n");
   for (i = 0; i < 16 && thestack++; i++)
     {
@@ -356,7 +355,7 @@ cygwin_stackdump ()
   CONTEXT c;
   c.ContextFlags = CONTEXT_FULL;
   GetThreadContext (GetCurrentThread (), &c);
-  stackdump (c.Ebp, 0, 0);
+  stackdump (c.Ebp);
 }
 
 #define TIME_TO_WAIT_FOR_DEBUGGER 10000
@@ -448,7 +447,7 @@ try_to_debug (bool waitloop)
   return dbg;
 }
 
-extern "C" DWORD __stdcall RtlUnwind (void *, void *, void *, DWORD);
+extern "C" void WINAPI RtlUnwind (void *, void *, PEXCEPTION_RECORD, void *);
 static void __stdcall rtl_unwind (exception_list *, PEXCEPTION_RECORD) __attribute__ ((noinline, regparm (3)));
 void __stdcall
 rtl_unwind (exception_list *frame, PEXCEPTION_RECORD e)
@@ -660,14 +659,10 @@ exception::handle (EXCEPTION_RECORD *e, exception_list *frame, CONTEXT *in, void
 
 	  rtl_unwind (frame, e);
 	  if (cygheap->rlim_core > 0UL)
-	    {
-	      open_stackdumpfile ();
-	      dump_exception (e, in);
-	      stackdump ((DWORD) ebp, 0, 1);
-	    }
+	    stackdump ((DWORD) ebp, in, e);
 	}
 
-      if (e->ExceptionCode == STATUS_ACCESS_VIOLATION)
+      if ((NTSTATUS) e->ExceptionCode == STATUS_ACCESS_VIOLATION)
 	{
 	  int error_code = 0;
 	  if (si.si_code == SEGV_ACCERR)	/* Address present */
@@ -679,8 +674,7 @@ exception::handle (EXCEPTION_RECORD *e, exception_list *frame, CONTEXT *in, void
 	  klog (LOG_INFO, "%s[%d]: segfault at %08x rip %08x rsp %08x error %d",
 			  __progname, myself->pid,
 			  e->ExceptionInformation[1], in->Eip, in->Esp,
-			  ((in->Eip >= 0x61000000 && in->Eip < 0x61200000)
-			   ? 0 : 4) | (e->ExceptionInformation[0] << 1));
+			  error_code);
 	}
 
       /* Flag signal + core dump */
@@ -714,11 +708,11 @@ handle_sigsuspend (sigset_t tempmask)
 {
   sigset_t oldmask = _my_tls.sigmask;	// Remember for restoration
 
-  set_signal_mask (tempmask, _my_tls.sigmask);
+  set_signal_mask (_my_tls.sigmask, tempmask);
   sigproc_printf ("oldmask %p, newmask %p", oldmask, tempmask);
 
   pthread_testcancel ();
-  cancelable_wait (signal_arrived);
+  cancelable_wait (NULL, cw_infinite, cw_cancel | cw_cancel_self | cw_sig_eintr);
 
   set_sig_errno (EINTR);	// Per POSIX
 
@@ -751,8 +745,7 @@ sig_handle_tty_stop (int sig)
   sigproc_printf ("process %d stopped by signal %d", myself->pid, sig);
   HANDLE w4[2];
   w4[0] = sigCONT;
-  w4[1] = signal_arrived;
-  switch (WaitForMultipleObjects (2, w4, TRUE, INFINITE))
+  switch (cancelable_wait (sigCONT, cw_infinite, cw_sig_eintr))
     {
     case WAIT_OBJECT_0:
     case WAIT_OBJECT_0 + 1:
@@ -808,20 +801,11 @@ _cygtls::interrupt_setup (int sig, void *handler, struct sigaction& siga)
 
   this->sig = sig;			// Should always be last thing set to avoid a race
 
-  if (!event)
-    threadkill = false;
-  else
-    {
-      HANDLE h = event;
-      event = NULL;
-      SetEvent (h);
-    }
+  if (signal_arrived)
+    SetEvent (signal_arrived);
 
-  /* Clear any waiting threads prior to dispatching to handler function */
-  int res = SetEvent (signal_arrived);	// For an EINTR case
   proc_subproc (PROC_CLEARWAIT, 1);
-  sigproc_printf ("armed signal_arrived %p, signal %d, res %d", signal_arrived,
-		  sig, res);
+  sigproc_printf ("armed signal_arrived %p, signal %d", signal_arrived, sig);
 }
 
 extern "C" void __stdcall
@@ -869,7 +853,7 @@ setup_handler (int sig, void *handler, struct sigaction& siga, _cygtls *tls)
 	     If the thread is already suspended (which can occur when a program
 	     has called SuspendThread on itself) then just queue the signal. */
 
-	  sigproc_printf ("suspending thread");
+	  sigproc_printf ("suspending thread, tls %p, _main_tls %p", tls, _main_tls);
 	  res = SuspendThread (hth);
 	  /* Just set pending if thread is already suspended */
 	  if (res)
@@ -879,12 +863,12 @@ setup_handler (int sig, void *handler, struct sigaction& siga, _cygtls *tls)
 	    }
 	  cx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
 	  if (!GetThreadContext (hth, &cx))
-	    system_printf ("couldn't get context of thread, %E");
+	    sigproc_printf ("couldn't get context of thread, %E");
 	  else
 	    interrupted = tls->interrupt_now (&cx, sig, handler, siga);
 
 	  tls->unlock ();
-	  res = ResumeThread (hth);
+	  ResumeThread (hth);
 	  if (interrupted)
 	    goto out;
 
@@ -1000,8 +984,9 @@ ctrl_c_handler (DWORD type)
   tty_min *t = cygwin_shared->tty.get_cttyp ();
   /* Ignore this if we're not the process group leader since it should be handled
      *by* the process group leader. */
-  if (t && t->getpgid () == myself->pid &&
-       (GetTickCount () - t->last_ctrl_c) >= MIN_CTRL_C_SLOP)
+  if (t && (!have_execed || have_execed_cygwin)
+      && t->getpgid () == myself->pid &&
+      (GetTickCount () - t->last_ctrl_c) >= MIN_CTRL_C_SLOP)
     /* Otherwise we just send a SIGINT to the process group and return TRUE (to indicate
        that we have handled the signal).  At this point, type should be
        a CTRL_C_EVENT or CTRL_BREAK_EVENT. */
@@ -1024,7 +1009,7 @@ ctrl_c_handler (DWORD type)
 extern "C" void __stdcall
 set_process_mask (sigset_t newmask)
 {
-  set_signal_mask (newmask, _my_tls.sigmask);
+  set_signal_mask (_my_tls.sigmask, newmask);
 }
 
 extern "C" int
@@ -1037,11 +1022,9 @@ sighold (int sig)
       syscall_printf ("signal %d out of range", sig);
       return -1;
     }
-  mask_sync.acquire (INFINITE);
   sigset_t mask = _my_tls.sigmask;
   sigaddset (&mask, sig);
-  set_signal_mask (mask, _my_tls.sigmask);
-  mask_sync.release ();
+  set_signal_mask (_my_tls.sigmask, mask);
   return 0;
 }
 
@@ -1055,11 +1038,9 @@ sigrelse (int sig)
       syscall_printf ("signal %d out of range", sig);
       return -1;
     }
-  mask_sync.acquire (INFINITE);
   sigset_t mask = _my_tls.sigmask;
   sigdelset (&mask, sig);
-  set_signal_mask (mask, _my_tls.sigmask);
-  mask_sync.release ();
+  set_signal_mask (_my_tls.sigmask, mask);
   return 0;
 }
 
@@ -1077,7 +1058,6 @@ sigset (int sig, _sig_func_ptr func)
       return (_sig_func_ptr) SIG_ERR;
     }
 
-  mask_sync.acquire (INFINITE);
   sigset_t mask = _my_tls.sigmask;
   /* If sig was in the signal mask return SIG_HOLD, otherwise return the
      previous disposition. */
@@ -1096,8 +1076,7 @@ sigset (int sig, _sig_func_ptr func)
       signal (sig, func);
       sigdelset (&mask, sig);
     }
-  set_signal_mask (mask, _my_tls.sigmask);
-  mask_sync.release ();
+  set_signal_mask (_my_tls.sigmask, mask);
   return prev;
 }
 
@@ -1112,7 +1091,6 @@ sigignore (int sig)
 extern "C" sigset_t
 set_process_mask_delta ()
 {
-  mask_sync.acquire (INFINITE);
   sigset_t newmask, oldmask;
 
   if (_my_tls.deltamask & SIG_NONMASKABLE)
@@ -1123,28 +1101,22 @@ set_process_mask_delta ()
   sigproc_printf ("oldmask %p, newmask %p, deltamask %p", oldmask, newmask,
 		  _my_tls.deltamask);
   _my_tls.sigmask = newmask;
-  mask_sync.release ();
   return oldmask;
 }
 
 /* Set the signal mask for this process.
    Note that some signals are unmaskable, as in UNIX.  */
-extern "C" void __stdcall
-set_signal_mask (sigset_t newmask, sigset_t& oldmask)
+
+void
+set_signal_mask (sigset_t& setmask, sigset_t newmask)
 {
-#ifdef CGF
-  if (&_my_tls == _sig_tls)
-    small_printf ("********* waiting in signal thread\n");
-#endif
-  mask_sync.acquire (INFINITE);
   newmask &= ~SIG_NONMASKABLE;
-  sigset_t mask_bits = oldmask & ~newmask;
-  sigproc_printf ("oldmask %p, newmask %p, mask_bits %p", oldmask, newmask,
+  sigset_t mask_bits = setmask & ~newmask;
+  sigproc_printf ("setmask %p, newmask %p, mask_bits %p", setmask, newmask,
 		  mask_bits);
-  oldmask = newmask;
+  setmask = newmask;
   if (mask_bits)
     sig_dispatch_pending (true);
-  mask_sync.release ();
 }
 
 int __stdcall
@@ -1187,16 +1159,23 @@ sigpacket::process ()
 
   myself->rusage_self.ru_nsignals++;
 
-  bool masked;
-  void *handler;
-  if (!have_execed || (void *) thissig.sa_handler == (void *) SIG_IGN)
-    handler = (void *) thissig.sa_handler;
-  else if (tls)
-    return 1;
-  else
+  void *handler = (void *) thissig.sa_handler;
+  if (handler == SIG_IGN)
+    {
+      sigproc_printf ("signal %d ignored", si.si_signo);
+      goto done;
+    }
+
+  if (have_execed)
     handler = NULL;
 
-  _cygtls *use_tls = tls ?: _main_tls;
+  if (tls)
+    sigproc_printf ("using tls %p", tls);
+  else
+    {
+      tls = _main_tls;
+      sigproc_printf ("using main tls %p", _main_tls);
+    }
 
   if (si.si_signo == SIGKILL)
     goto exit_sig;
@@ -1206,30 +1185,12 @@ sigpacket::process ()
       goto stop;
     }
 
-  bool insigwait_mask;
-  if ((masked = ISSTATE (myself, PID_STOPPED)))
-    insigwait_mask = false;
-  else if (tls)
-    insigwait_mask = sigismember (&tls->sigwait_mask, si.si_signo);
-  else if (!(tls = _cygtls::find_tls (si.si_signo)))
-    insigwait_mask = false;
-  else
+  if (sigismember (&tls->sigwait_mask, si.si_signo))
     {
-      use_tls = tls;
-      insigwait_mask = true;
+      tls->sigwait_mask = 0;
+      goto dosig;
     }
-
-  if (insigwait_mask)
-    goto thread_specific;
-
-  if (masked)
-    /* nothing to do */;
-  else if (sigismember (mask, si.si_signo))
-    masked = true;
-  else if (tls)
-    masked  = sigismember (&tls->sigmask, si.si_signo);
-
-  if (masked)
+  if (sigismember (&tls->sigmask, si.si_signo) || ISSTATE (myself, PID_STOPPED))
     {
       sigproc_printf ("signal %d blocked", si.si_signo);
       rc = -1;
@@ -1242,14 +1203,12 @@ sigpacket::process ()
 
   if (handler == (void *) SIG_DFL)
     {
-      if (insigwait_mask)
-	goto thread_specific;
       if (si.si_signo == SIGCHLD || si.si_signo == SIGIO || si.si_signo == SIGCONT || si.si_signo == SIGWINCH
 	  || si.si_signo == SIGURG)
 	{
 	  sigproc_printf ("default signal %d ignored", si.si_signo);
 	  if (continue_now)
-	    SetEvent (signal_arrived);
+	    SetEvent (tls->signal_arrived);
 	  goto done;
 	}
 
@@ -1259,16 +1218,9 @@ sigpacket::process ()
       goto exit_sig;
     }
 
-  if (handler == (void *) SIG_IGN)
-    {
-      sigproc_printf ("signal %d ignored", si.si_signo);
-      goto done;
-    }
-
   if (handler == (void *) SIG_ERR)
     goto exit_sig;
 
-  use_tls->set_siginfo (this);
   goto dosig;
 
 stop:
@@ -1279,33 +1231,19 @@ stop:
   thissig = dummy;
 
 dosig:
+  tls->set_siginfo (this);
   /* Dispatch to the appropriate function. */
-  sigproc_printf ("signal %d, about to call %p", si.si_signo, handler);
-  rc = setup_handler (si.si_signo, handler, thissig, use_tls);
+  sigproc_printf ("signal %d, signal handler %p", si.si_signo, handler);
+  rc = setup_handler (si.si_signo, handler, thissig, tls);
 
 done:
-  tls = use_tls;
   if (continue_now)
     SetEvent (sigCONT);
   sigproc_printf ("returning %d", rc);
   return rc;
 
-thread_specific:
-  use_tls->sig = si.si_signo;
-  use_tls->set_siginfo (this);
-  use_tls->func = NULL;
-  sigproc_printf ("releasing sigwait for thread");
-  SetEvent (use_tls->event);
-  goto done;
-
 exit_sig:
-  use_tls->signal_exit (si.si_signo);	/* never returns */
-}
-
-void
-events_init ()
-{
-  mask_sync.init ("mask_sync");
+  tls->signal_exit (si.si_signo);	/* never returns */
 }
 
 void
@@ -1323,23 +1261,7 @@ _cygtls::call_signal_handler ()
       lock ();
       if (sig)
 	pop ();
-      else if (this != _main_tls)
-	{
-	  _main_tls->lock ();
-	  if (_main_tls->sig && _main_tls->incyg)
-	    {
-	      paranoid_printf ("Redirecting to main_tls signal %d", _main_tls->sig);
-	      sig = _main_tls->sig;
-	      sa_flags = _main_tls->sa_flags;
-	      func = _main_tls->func;
-	      infodata = _main_tls->infodata;
-	      _main_tls->pop ();
-	      _main_tls->sig = 0;
-
-	    }
-	  _main_tls->unlock ();
-	}
-      if (!sig)
+      else
 	break;
 
       debug_only_printf ("dealing with signal %d", sig);
@@ -1366,7 +1288,7 @@ _cygtls::call_signal_handler ()
 	  sigact (thissig, &thissi, NULL);
 	}
       incyg = true;
-      set_signal_mask (this_oldmask, _my_tls.sigmask);
+      set_signal_mask (_my_tls.sigmask, this_oldmask);
       if (this_errno >= 0)
 	set_errno (this_errno);
     }

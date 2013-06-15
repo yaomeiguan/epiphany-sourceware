@@ -75,8 +75,7 @@ struct block *expression_context_block;
 CORE_ADDR expression_context_pc;
 struct block *innermost_block;
 int arglist_len;
-union type_stack_elt *type_stack;
-int type_stack_depth, type_stack_size;
+static struct type_stack type_stack;
 char *lexptr;
 char *prev_lexptr;
 int paren_depth;
@@ -113,12 +112,11 @@ show_parserdebug (struct ui_file *file, int from_tty,
 
 static void free_funcalls (void *ignore);
 
-static int prefixify_expression (struct expression *);
-
 static int prefixify_subexp (struct expression *, struct expression *, int,
 			     int);
 
-static struct expression *parse_exp_in_context (char **, struct block *, int, 
+static struct expression *parse_exp_in_context (char **, CORE_ADDR,
+						struct block *, int, 
 						int, int *);
 
 void _initialize_parse (void);
@@ -182,13 +180,9 @@ free_funcalls (void *ignore)
 /* This page contains the functions for adding data to the struct expression
    being constructed.  */
 
-/* Helper function to initialize the expout, expout_size, expout_ptr
-   trio before it is used to store expression elements created during
-   the parsing of an expression.  INITIAL_SIZE is the initial size of
-   the expout array.  LANG is the language used to parse the expression.
-   And GDBARCH is the gdbarch to use during parsing.  */
+/* See definition in parser-defs.h.  */
 
-static void
+void
 initialize_expout (int initial_size, const struct language_defn *lang,
 		   struct gdbarch *gdbarch)
 {
@@ -200,11 +194,9 @@ initialize_expout (int initial_size, const struct language_defn *lang,
   expout->gdbarch = gdbarch;
 }
 
-/* Helper function that frees any unsed space in the expout array.
-   It is generally used when the parser has just been parsed and
-   created.  */
+/* See definition in parser-defs.h.  */
 
-static void
+void
 reallocate_expout (void)
 {
   /* Record the actual number of expression elements, and then
@@ -804,14 +796,10 @@ copy_name (struct stoken token)
   return namecopy;
 }
 
-/* Reverse an expression from suffix form (in which it is constructed)
-   to prefix form (in which we can conveniently print or execute it).
-   Ordinarily this always returns -1.  However, if EXPOUT_LAST_STRUCT
-   is not -1 (i.e., we are trying to complete a field name), it will
-   return the index of the subexpression which is the left-hand-side
-   of the struct operation at EXPOUT_LAST_STRUCT.  */
 
-static int
+/* See comments on parser-defs.h.  */
+
+int
 prefixify_expression (struct expression *expr)
 {
   int len = sizeof (struct expression) + EXP_ELEM_TO_BYTES (expr->nelts);
@@ -922,10 +910,16 @@ operator_length_standard (const struct expression *expr, int endpos,
       oplen = 3;
       break;
 
-    case BINOP_VAL:
-    case UNOP_CAST:
+    case UNOP_CAST_TYPE:
     case UNOP_DYNAMIC_CAST:
     case UNOP_REINTERPRET_CAST:
+    case UNOP_MEMVAL_TYPE:
+      oplen = 1;
+      args = 2;
+      break;
+
+    case BINOP_VAL:
+    case UNOP_CAST:
     case UNOP_MEMVAL:
       oplen = 3;
       args = 1;
@@ -944,6 +938,8 @@ operator_length_standard (const struct expression *expr, int endpos,
     case UNOP_ODD:
     case UNOP_ORD:
     case UNOP_TRUNC:
+    case OP_TYPEOF:
+    case OP_DECLTYPE:
       oplen = 1;
       args = 1;
       break;
@@ -1109,9 +1105,9 @@ prefixify_subexp (struct expression *inexpr,
    If COMMA is nonzero, stop if a comma is reached.  */
 
 struct expression *
-parse_exp_1 (char **stringptr, struct block *block, int comma)
+parse_exp_1 (char **stringptr, CORE_ADDR pc, struct block *block, int comma)
 {
-  return parse_exp_in_context (stringptr, block, comma, 0, NULL);
+  return parse_exp_in_context (stringptr, pc, block, comma, 0, NULL);
 }
 
 /* As for parse_exp_1, except that if VOID_CONTEXT_P, then
@@ -1122,8 +1118,8 @@ parse_exp_1 (char **stringptr, struct block *block, int comma)
    is left untouched.  */
 
 static struct expression *
-parse_exp_in_context (char **stringptr, struct block *block, int comma, 
-		      int void_context_p, int *out_subexp)
+parse_exp_in_context (char **stringptr, CORE_ADDR pc, struct block *block,
+		      int comma, int void_context_p, int *out_subexp)
 {
   volatile struct gdb_exception except;
   struct cleanup *old_chain;
@@ -1134,7 +1130,7 @@ parse_exp_in_context (char **stringptr, struct block *block, int comma,
   prev_lexptr = NULL;
 
   paren_depth = 0;
-  type_stack_depth = 0;
+  type_stack.depth = 0;
   expout_last_struct = -1;
 
   comma_terminates = comma;
@@ -1150,8 +1146,10 @@ parse_exp_in_context (char **stringptr, struct block *block, int comma,
   /* If no context specified, try using the current frame, if any.  */
   if (!expression_context_block)
     expression_context_block = get_selected_block (&expression_context_pc);
-  else
+  else if (pc == 0)
     expression_context_pc = BLOCK_START (expression_context_block);
+  else
+    expression_context_pc = pc;
 
   /* Fall back to using the current source static context, if any.  */
 
@@ -1239,7 +1237,7 @@ parse_expression (char *string)
 {
   struct expression *exp;
 
-  exp = parse_exp_1 (&string, 0, 0);
+  exp = parse_exp_1 (&string, 0, 0, 0);
   if (*string)
     error (_("Junk after end of expression."));
   return exp;
@@ -1264,7 +1262,7 @@ parse_field_expression (char *string, char **name)
   TRY_CATCH (except, RETURN_MASK_ERROR)
     {
       in_parse_field = 1;
-      exp = parse_exp_in_context (&string, 0, 0, 0, &subexp);
+      exp = parse_exp_in_context (&string, 0, 0, 0, 0, &subexp);
     }
   in_parse_field = 0;
   if (except.reason < 0 || ! exp)
@@ -1310,7 +1308,6 @@ int
 parse_float (const char *p, int len, DOUBLEST *d, const char **suffix)
 {
   char *copy;
-  char *s;
   int n, num;
 
   copy = xmalloc (len + 1);
@@ -1369,52 +1366,212 @@ parse_c_float (struct gdbarch *gdbarch, const char *p, int len,
 /* Stuff for maintaining a stack of types.  Currently just used by C, but
    probably useful for any language which declares its types "backwards".  */
 
+/* Ensure that there are HOWMUCH open slots on the type stack STACK.  */
+
+static void
+type_stack_reserve (struct type_stack *stack, int howmuch)
+{
+  if (stack->depth + howmuch >= stack->size)
+    {
+      stack->size *= 2;
+      if (stack->size < howmuch)
+	stack->size = howmuch;
+      stack->elements = xrealloc (stack->elements,
+				  stack->size * sizeof (union type_stack_elt));
+    }
+}
+
+/* Ensure that there is a single open slot in the global type stack.  */
+
 static void
 check_type_stack_depth (void)
 {
-  if (type_stack_depth == type_stack_size)
-    {
-      type_stack_size *= 2;
-      type_stack = (union type_stack_elt *)
-	xrealloc ((char *) type_stack, type_stack_size * sizeof (*type_stack));
-    }
+  type_stack_reserve (&type_stack, 1);
+}
+
+/* A helper function for insert_type and insert_type_address_space.
+   This does work of expanding the type stack and inserting the new
+   element, ELEMENT, into the stack at location SLOT.  */
+
+static void
+insert_into_type_stack (int slot, union type_stack_elt element)
+{
+  check_type_stack_depth ();
+
+  if (slot < type_stack.depth)
+    memmove (&type_stack.elements[slot + 1], &type_stack.elements[slot],
+	     (type_stack.depth - slot) * sizeof (union type_stack_elt));
+  type_stack.elements[slot] = element;
+  ++type_stack.depth;
+}
+
+/* Insert a new type, TP, at the bottom of the type stack.  If TP is
+   tp_pointer or tp_reference, it is inserted at the bottom.  If TP is
+   a qualifier, it is inserted at slot 1 (just above a previous
+   tp_pointer) if there is anything on the stack, or simply pushed if
+   the stack is empty.  Other values for TP are invalid.  */
+
+void
+insert_type (enum type_pieces tp)
+{
+  union type_stack_elt element;
+  int slot;
+
+  gdb_assert (tp == tp_pointer || tp == tp_reference
+	      || tp == tp_const || tp == tp_volatile);
+
+  /* If there is anything on the stack (we know it will be a
+     tp_pointer), insert the qualifier above it.  Otherwise, simply
+     push this on the top of the stack.  */
+  if (type_stack.depth && (tp == tp_const || tp == tp_volatile))
+    slot = 1;
+  else
+    slot = 0;
+
+  element.piece = tp;
+  insert_into_type_stack (slot, element);
 }
 
 void
 push_type (enum type_pieces tp)
 {
   check_type_stack_depth ();
-  type_stack[type_stack_depth++].piece = tp;
+  type_stack.elements[type_stack.depth++].piece = tp;
 }
 
 void
 push_type_int (int n)
 {
   check_type_stack_depth ();
-  type_stack[type_stack_depth++].int_val = n;
+  type_stack.elements[type_stack.depth++].int_val = n;
 }
 
+/* Insert a tp_space_identifier and the corresponding address space
+   value into the stack.  STRING is the name of an address space, as
+   recognized by address_space_name_to_int.  If the stack is empty,
+   the new elements are simply pushed.  If the stack is not empty,
+   this function assumes that the first item on the stack is a
+   tp_pointer, and the new values are inserted above the first
+   item.  */
+
 void
-push_type_address_space (char *string)
+insert_type_address_space (char *string)
 {
-  push_type_int (address_space_name_to_int (parse_gdbarch, string));
+  union type_stack_elt element;
+  int slot;
+
+  /* If there is anything on the stack (we know it will be a
+     tp_pointer), insert the address space qualifier above it.
+     Otherwise, simply push this on the top of the stack.  */
+  if (type_stack.depth)
+    slot = 1;
+  else
+    slot = 0;
+
+  element.piece = tp_space_identifier;
+  insert_into_type_stack (slot, element);
+  element.int_val = address_space_name_to_int (parse_gdbarch, string);
+  insert_into_type_stack (slot, element);
 }
 
 enum type_pieces
 pop_type (void)
 {
-  if (type_stack_depth)
-    return type_stack[--type_stack_depth].piece;
+  if (type_stack.depth)
+    return type_stack.elements[--type_stack.depth].piece;
   return tp_end;
 }
 
 int
 pop_type_int (void)
 {
-  if (type_stack_depth)
-    return type_stack[--type_stack_depth].int_val;
+  if (type_stack.depth)
+    return type_stack.elements[--type_stack.depth].int_val;
   /* "Can't happen".  */
   return 0;
+}
+
+/* Pop a type list element from the global type stack.  */
+
+static VEC (type_ptr) *
+pop_typelist (void)
+{
+  gdb_assert (type_stack.depth);
+  return type_stack.elements[--type_stack.depth].typelist_val;
+}
+
+/* Pop a type_stack element from the global type stack.  */
+
+static struct type_stack *
+pop_type_stack (void)
+{
+  gdb_assert (type_stack.depth);
+  return type_stack.elements[--type_stack.depth].stack_val;
+}
+
+/* Append the elements of the type stack FROM to the type stack TO.
+   Always returns TO.  */
+
+struct type_stack *
+append_type_stack (struct type_stack *to, struct type_stack *from)
+{
+  type_stack_reserve (to, from->depth);
+
+  memcpy (&to->elements[to->depth], &from->elements[0],
+	  from->depth * sizeof (union type_stack_elt));
+  to->depth += from->depth;
+
+  return to;
+}
+
+/* Push the type stack STACK as an element on the global type stack.  */
+
+void
+push_type_stack (struct type_stack *stack)
+{
+  check_type_stack_depth ();
+  type_stack.elements[type_stack.depth++].stack_val = stack;
+  push_type (tp_type_stack);
+}
+
+/* Copy the global type stack into a newly allocated type stack and
+   return it.  The global stack is cleared.  The returned type stack
+   must be freed with type_stack_cleanup.  */
+
+struct type_stack *
+get_type_stack (void)
+{
+  struct type_stack *result = XNEW (struct type_stack);
+
+  *result = type_stack;
+  type_stack.depth = 0;
+  type_stack.size = 0;
+  type_stack.elements = NULL;
+
+  return result;
+}
+
+/* A cleanup function that destroys a single type stack.  */
+
+void
+type_stack_cleanup (void *arg)
+{
+  struct type_stack *stack = arg;
+
+  xfree (stack->elements);
+  xfree (stack);
+}
+
+/* Push a function type with arguments onto the global type stack.
+   LIST holds the argument types.  If the final item in LIST is NULL,
+   then the function will be varargs.  */
+
+void
+push_typelist (VEC (type_ptr) *list)
+{
+  check_type_stack_depth ();
+  type_stack.elements[type_stack.depth++].typelist_val = list;
+  push_type (tp_function_with_arguments);
 }
 
 /* Pop the type stack and return the type which corresponds to FOLLOW_TYPE
@@ -1503,6 +1660,36 @@ follow_types (struct type *follow_type)
 	   done with it.  */
 	follow_type = lookup_function_type (follow_type);
 	break;
+
+      case tp_function_with_arguments:
+	{
+	  VEC (type_ptr) *args = pop_typelist ();
+
+	  follow_type
+	    = lookup_function_type_with_arguments (follow_type,
+						   VEC_length (type_ptr, args),
+						   VEC_address (type_ptr,
+								args));
+	  VEC_free (type_ptr, args);
+	}
+	break;
+
+      case tp_type_stack:
+	{
+	  struct type_stack *stack = pop_type_stack ();
+	  /* Sort of ugly, but not really much worse than the
+	     alternatives.  */
+	  struct type_stack save = type_stack;
+
+	  type_stack = *stack;
+	  follow_type = follow_types (follow_type);
+	  gdb_assert (type_stack.depth == 0);
+
+	  type_stack = save;
+	}
+	break;
+      default:
+	gdb_assert_not_reached ("unrecognized tp_ value in follow_types");
       }
   return follow_type;
 }
@@ -1553,8 +1740,6 @@ operator_check_standard (struct expression *exp, int pos,
     case OP_SCOPE:
     case OP_TYPE:
     case UNOP_CAST:
-    case UNOP_DYNAMIC_CAST:
-    case UNOP_REINTERPRET_CAST:
     case UNOP_MAX:
     case UNOP_MEMVAL:
     case UNOP_MIN:
@@ -1670,10 +1855,9 @@ exp_uses_objfile (struct expression *exp, struct objfile *objfile)
 void
 _initialize_parse (void)
 {
-  type_stack_size = 80;
-  type_stack_depth = 0;
-  type_stack = (union type_stack_elt *)
-    xmalloc (type_stack_size * sizeof (*type_stack));
+  type_stack.size = 0;
+  type_stack.depth = 0;
+  type_stack.elements = NULL;
 
   add_setshow_zinteger_cmd ("expression", class_maintenance,
 			    &expressiondebug,

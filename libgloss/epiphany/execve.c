@@ -1,6 +1,6 @@
 /* EPIPHANY implementation of _execve ()
 
-   Copyright (c) 2011, Adapteva, Inc.
+   Copyright (c) 2011, 2012 Adapteva, Inc.
    All rights reserved.
 
    Contributor Jeremy Bennett <jeremy.bennett@embecosm.com> for Adapteva Inc

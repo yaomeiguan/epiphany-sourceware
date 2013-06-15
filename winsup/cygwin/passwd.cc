@@ -1,6 +1,7 @@
 /* passwd.cc: getpwnam () and friends
 
-   Copyright 1996, 1997, 1998, 2001, 2002, 2003, 2007, 2008, 2009 Red Hat, Inc.
+   Copyright 1996, 1997, 1998, 2001, 2002, 2003, 2007, 2008, 2009,
+   2010, 2011, 2012 Red Hat, Inc.
 
 This file is part of Cygwin.
 
@@ -31,7 +32,7 @@ static pwdgrp pr (passwd_buf);
 bool
 pwdgrp::parse_passwd ()
 {
-# define res (*passwd_buf)[curr_lines]
+  passwd &res = (*passwd_buf)[curr_lines];
   res.pw_name = next_str (':');
   res.pw_passwd = next_str (':');
   if (!next_num (res.pw_uid))
@@ -43,7 +44,6 @@ pwdgrp::parse_passwd ()
   res.pw_dir =  next_str (':');
   res.pw_shell = next_str (':');
   return true;
-# undef res
 }
 
 /* Read in /etc/passwd and save contents in the password cache.
@@ -58,7 +58,7 @@ pwdgrp::read_passwd ()
   bool searchentry = true;
   struct passwd *pw;
   /* must be static */
-  static char NO_COPY pretty_ls[] = "????????:*:-1:-1:";
+  static char NO_COPY pretty_ls[] = "????????:*:-1:-1:::";
 
   add_line (pretty_ls);
   cygsid tu = cygheap->user.sid ();
@@ -269,29 +269,55 @@ setpassent ()
   return 0;
 }
 
+static void
+_getpass_close_fd (void *arg)
+{
+  if (arg)
+    fclose ((FILE *) arg);
+}
+
 extern "C" char *
 getpass (const char * prompt)
 {
   char *pass = _my_tls.locals.pass;
   struct termios ti, newti;
+  bool tc_set = false;
 
-  cygheap_fdget fhstdin (0);
-
-  if (fhstdin < 0)
-    pass[0] = '\0';
-  else
+  /* Try to use controlling tty in the first place.  Use stdin and stderr
+     only as fallback. */
+  FILE *in = stdin, *err = stderr;
+  FILE *tty = fopen ("/dev/tty", "w+b");
+  pthread_cleanup_push  (_getpass_close_fd, tty);
+  if (tty)
     {
-      fhstdin->tcgetattr (&ti);
-      newti = ti;
-      newti.c_lflag &= ~ECHO;
-      fhstdin->tcsetattr (TCSANOW, &newti);
-      fputs (prompt, stderr);
-      fgets (pass, _PASSWORD_LEN, stdin);
-      fprintf (stderr, "\n");
-      for (int i=0; pass[i]; i++)
-	if (pass[i] == '\r' || pass[i] == '\n')
-	  pass[i] = '\0';
-      fhstdin->tcsetattr (TCSANOW, &ti);
+      /* Set close-on-exec for obvious reasons. */
+      fcntl (fileno (tty), F_SETFD, fcntl (fileno (tty), F_GETFD) | FD_CLOEXEC);
+      in = err = tty;
     }
+
+  /* Make sure to notice if stdin is closed. */
+  if (fileno (in) >= 0)
+    {
+      flockfile (in);
+      /* Change tty attributes if possible. */
+      if (!tcgetattr (fileno (in), &ti))
+	{
+	  newti = ti;
+	  newti.c_lflag &= ~(ECHO | ISIG); /* No echo, no signal handling. */
+	  if (!tcsetattr (fileno (in), TCSANOW, &newti))
+	    tc_set = true;
+	}
+      fputs (prompt, err);
+      fflush (err);
+      fgets (pass, _PASSWORD_LEN, in);
+      fprintf (err, "\n");
+      if (tc_set)
+	tcsetattr (fileno (in), TCSANOW, &ti);
+      funlockfile (in);
+      char *crlf = strpbrk (pass, "\r\n");
+      if (crlf)
+	*crlf = '\0';
+    }
+  pthread_cleanup_pop (1);
   return pass;
 }
