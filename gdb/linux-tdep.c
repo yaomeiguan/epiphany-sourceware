@@ -173,8 +173,8 @@ linux_get_siginfo_type (struct gdbarch *gdbarch)
   return siginfo_type;
 }
 
-int
-linux_has_shared_address_space (void)
+static int
+linux_has_shared_address_space (struct gdbarch *gdbarch)
 {
   /* Determine whether we are running on uClinux or normal Linux
      kernel.  */
@@ -402,18 +402,21 @@ linux_info_proc (struct gdbarch *gdbarch, char *args,
 	{
 	  struct cleanup *cleanup = make_cleanup (xfree, data);
 	  const char *p = data;
-	  const char *ep;
-	  ULONGEST val;
 
 	  printf_filtered (_("Process: %s\n"),
 			   pulongest (strtoulst (p, &p, 10)));
 
 	  while (*p && isspace (*p))
 	    p++;
-	  if (*p == '(' && (ep = strchr (p, ')')) != NULL)
+	  if (*p == '(')
 	    {
-	      printf_filtered ("Exec file: %.*s\n", (int) (ep - p - 1), p + 1);
-	      p = ep + 1;
+	      const char *ep = strchr (p, ')');
+	      if (ep != NULL)
+		{
+		  printf_filtered ("Exec file: %.*s\n",
+				   (int) (ep - p - 1), p + 1);
+		  p = ep + 1;
+		}
 	    }
 
 	  while (*p && isspace (*p))
@@ -582,14 +585,14 @@ linux_find_memory_regions (struct gdbarch *gdbarch,
 static int
 find_signalled_thread (struct thread_info *info, void *data)
 {
-  if (info->suspend.stop_signal != TARGET_SIGNAL_0
+  if (info->suspend.stop_signal != GDB_SIGNAL_0
       && ptid_get_pid (info->ptid) == ptid_get_pid (inferior_ptid))
     return 1;
 
   return 0;
 }
 
-static enum target_signal
+static enum gdb_signal
 find_stop_signal (void)
 {
   struct thread_info *info =
@@ -598,7 +601,7 @@ find_stop_signal (void)
   if (info)
     return info->suspend.stop_signal;
   else
-    return TARGET_SIGNAL_0;
+    return GDB_SIGNAL_0;
 }
 
 /* Generate corefile notes for SPU contexts.  */
@@ -680,7 +683,7 @@ static char *
 linux_collect_thread_registers (const struct regcache *regcache,
 				ptid_t ptid, bfd *obfd,
 				char *note_data, int *note_size,
-				enum target_signal stop_signal)
+				enum gdb_signal stop_signal)
 {
   struct gdbarch *gdbarch = get_regcache_arch (regcache);
   struct core_regset_section *sect_list;
@@ -711,7 +714,7 @@ linux_collect_thread_registers (const struct regcache *regcache,
       if (strcmp (sect_list->sect_name, ".reg") == 0)
 	note_data = (char *) elfcore_write_prstatus
 			       (obfd, note_data, note_size, lwp,
-				target_signal_to_host (stop_signal), buf);
+				gdb_signal_to_host (stop_signal), buf);
       else
 	note_data = (char *) elfcore_write_register_note
 			       (obfd, note_data, note_size,
@@ -734,7 +737,7 @@ struct linux_corefile_thread_data
   char *note_data;
   int *note_size;
   int num_notes;
-  enum target_signal stop_signal;
+  enum gdb_signal stop_signal;
   linux_collect_thread_registers_ftype collect;
 };
 
@@ -856,7 +859,12 @@ linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
   set_gdbarch_info_proc (gdbarch, linux_info_proc);
   set_gdbarch_find_memory_regions (gdbarch, linux_find_memory_regions);
   set_gdbarch_make_corefile_notes (gdbarch, linux_make_corefile_notes_1);
+  set_gdbarch_has_shared_address_space (gdbarch,
+					linux_has_shared_address_space);
 }
+
+/* Provide a prototype to silence -Wmissing-prototypes.  */
+extern initialize_file_ftype _initialize_linux_tdep;
 
 void
 _initialize_linux_tdep (void)

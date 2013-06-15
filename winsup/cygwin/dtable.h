@@ -1,13 +1,15 @@
 /* dtable.h: fd table definition.
 
    Copyright 2000, 2001, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-   2010, 2011 Red Hat, Inc.
+   2010, 2011, 2012 Red Hat, Inc.
 
 This file is part of Cygwin.
 
 This software is a copyrighted work licensed under the terms of the
 Cygwin license.  Please consult the file "CYGWIN_LICENSE" for
 details. */
+
+#pragma once
 
 /* Initial and increment values for cygwin's fd table */
 #define NOFILE_INCR    32
@@ -54,6 +56,8 @@ public:
   fhandler_base *dup_worker (fhandler_base *oldfh, int flags);
   int extend (int howmuch);
   void fixup_after_fork (HANDLE);
+  void fixup_close (size_t, fhandler_base *);
+
   inline int not_open (int fd)
   {
     lock ();
@@ -63,7 +67,7 @@ public:
   }
   int find_unused_handle (int start);
   int find_unused_handle () { return find_unused_handle (first_fd_for_open);}
-  bool release (int fd) __attribute__ ((regparm (2)));
+  void release (int fd) __attribute__ ((regparm (2)));
   void init_std_file_from_handle (int fd, HANDLE handle);
   int dup3 (int oldfd, int newfd, int flags);
   void fixup_after_exec ();
@@ -85,6 +89,7 @@ public:
   void fixup_before_fork (DWORD win_proc_id);
   friend void dtable_init ();
   friend void __stdcall close_all_files (bool);
+  friend int dup_finish (int, int, int);
   friend class fhandler_disk_file;
   friend class cygheap_fdmanip;
   friend class cygheap_fdget;

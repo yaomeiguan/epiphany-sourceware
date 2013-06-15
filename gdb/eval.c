@@ -125,7 +125,7 @@ parse_and_eval (char *exp)
 struct value *
 parse_to_comma_and_eval (char **expp)
 {
-  struct expression *expr = parse_exp_1 (expp, (struct block *) 0, 1);
+  struct expression *expr = parse_exp_1 (expp, 0, (struct block *) 0, 1);
   struct value *val;
   struct cleanup *old_chain =
     make_cleanup (free_current_contents, &expr);
@@ -335,7 +335,8 @@ evaluate_struct_tuple (struct value *struct_val,
 	      for (fieldno = 0; fieldno < TYPE_NFIELDS (struct_type);
 		   fieldno++)
 		{
-		  char *field_name = TYPE_FIELD_NAME (struct_type, fieldno);
+		  const char *field_name =
+		    TYPE_FIELD_NAME (struct_type, fieldno);
 
 		  if (field_name != NULL && strcmp (field_name, label) == 0)
 		    {
@@ -348,7 +349,8 @@ evaluate_struct_tuple (struct value *struct_val,
 	      for (fieldno = 0; fieldno < TYPE_NFIELDS (struct_type);
 		   fieldno++)
 		{
-		  char *field_name = TYPE_FIELD_NAME (struct_type, fieldno);
+		  const char *field_name =
+		    TYPE_FIELD_NAME (struct_type, fieldno);
 
 		  field_type = TYPE_FIELD_TYPE (struct_type, fieldno);
 		  if ((field_name == 0 || *field_name == '\0')
@@ -767,6 +769,23 @@ make_params (int num_types, struct type **param_types)
   TYPE_CODE (type) = TYPE_CODE_METHOD;
   TYPE_VPTR_FIELDNO (type) = -1;
   TYPE_CHAIN (type) = type;
+  if (num_types > 0)
+    {
+      if (param_types[num_types - 1] == NULL)
+	{
+	  --num_types;
+	  TYPE_VARARGS (type) = 1;
+	}
+      else if (TYPE_CODE (check_typedef (param_types[num_types - 1]))
+	       == TYPE_CODE_VOID)
+	{
+	  --num_types;
+	  /* Caller should have ensured this.  */
+	  gdb_assert (num_types == 0);
+	  TYPE_PROTOTYPED (type) = 1;
+	}
+    }
+
   TYPE_NFIELDS (type) = num_types;
   TYPE_FIELDS (type) = (struct field *)
     TYPE_ZALLOC (type, sizeof (struct field) * num_types);
@@ -791,7 +810,7 @@ evaluate_subexp_standard (struct type *expect_type,
   struct type *type;
   int nargs;
   struct value **argvec;
-  int upper, lower;
+  int lower;
   int code;
   int ix;
   long mem_offset;
@@ -1356,8 +1375,7 @@ evaluate_subexp_standard (struct type *expect_type,
 		  val_type = expect_type;
 	      }
 
-	    struct_return = using_struct_return (exp->gdbarch,
-						 value_type (method),
+	    struct_return = using_struct_return (exp->gdbarch, method,
 						 val_type);
 	  }
 	else if (expect_type != NULL)
@@ -1999,16 +2017,10 @@ evaluate_subexp_standard (struct type *expect_type,
         if (opts.objectprint && TYPE_TARGET_TYPE(type)
             && (TYPE_CODE (TYPE_TARGET_TYPE (type)) == TYPE_CODE_CLASS))
           {
-            real_type = value_rtti_target_type (arg1, &full, &top, &using_enc);
+            real_type = value_rtti_indirect_type (arg1, &full, &top,
+						  &using_enc);
             if (real_type)
-              {
-                if (TYPE_CODE (type) == TYPE_CODE_PTR)
-                  real_type = lookup_pointer_type (real_type);
-                else
-                  real_type = lookup_reference_type (real_type);
-
                 arg1 = value_cast (real_type, arg1);
-              }
           }
       }
 
@@ -2052,8 +2064,8 @@ evaluate_subexp_standard (struct type *expect_type,
 
 	case TYPE_CODE_MEMBERPTR:
 	  /* Now, convert these values to an address.  */
-	  arg1 = value_cast (lookup_pointer_type (TYPE_DOMAIN_TYPE (type)),
-			     arg1);
+	  arg1 = value_cast_pointers (lookup_pointer_type (TYPE_DOMAIN_TYPE (type)),
+				      arg1, 1);
 
 	  mem_offset = value_as_long (arg2);
 
@@ -2695,17 +2707,27 @@ evaluate_subexp_standard (struct type *expect_type,
 	arg1 = value_cast (type, arg1);
       return arg1;
 
+    case UNOP_CAST_TYPE:
+      arg1 = evaluate_subexp (NULL, exp, pos, EVAL_AVOID_SIDE_EFFECTS);
+      type = value_type (arg1);
+      arg1 = evaluate_subexp (type, exp, pos, noside);
+      if (noside == EVAL_SKIP)
+	goto nosideret;
+      if (type != value_type (arg1))
+	arg1 = value_cast (type, arg1);
+      return arg1;
+
     case UNOP_DYNAMIC_CAST:
-      (*pos) += 2;
-      type = exp->elts[pc + 1].type;
+      arg1 = evaluate_subexp (NULL, exp, pos, EVAL_AVOID_SIDE_EFFECTS);
+      type = value_type (arg1);
       arg1 = evaluate_subexp (type, exp, pos, noside);
       if (noside == EVAL_SKIP)
 	goto nosideret;
       return value_dynamic_cast (type, arg1);
 
     case UNOP_REINTERPRET_CAST:
-      (*pos) += 2;
-      type = exp->elts[pc + 1].type;
+      arg1 = evaluate_subexp (NULL, exp, pos, EVAL_AVOID_SIDE_EFFECTS);
+      type = value_type (arg1);
       arg1 = evaluate_subexp (type, exp, pos, noside);
       if (noside == EVAL_SKIP)
 	goto nosideret;
@@ -2713,6 +2735,18 @@ evaluate_subexp_standard (struct type *expect_type,
 
     case UNOP_MEMVAL:
       (*pos) += 2;
+      arg1 = evaluate_subexp (expect_type, exp, pos, noside);
+      if (noside == EVAL_SKIP)
+	goto nosideret;
+      if (noside == EVAL_AVOID_SIDE_EFFECTS)
+	return value_zero (exp->elts[pc + 1].type, lval_memory);
+      else
+	return value_at_lazy (exp->elts[pc + 1].type,
+			      value_as_address (arg1));
+
+    case UNOP_MEMVAL_TYPE:
+      arg1 = evaluate_subexp (NULL, exp, pos, EVAL_AVOID_SIDE_EFFECTS);
+      type = value_type (arg1);
       arg1 = evaluate_subexp (expect_type, exp, pos, noside);
       if (noside == EVAL_SKIP)
 	goto nosideret;
@@ -2866,6 +2900,45 @@ evaluate_subexp_standard (struct type *expect_type,
       else
         error (_("Attempt to use a type name as an expression"));
 
+    case OP_TYPEOF:
+    case OP_DECLTYPE:
+      if (noside == EVAL_SKIP)
+	{
+	  evaluate_subexp (NULL_TYPE, exp, pos, EVAL_SKIP);
+	  goto nosideret;
+	}
+      else if (noside == EVAL_AVOID_SIDE_EFFECTS)
+	{
+	  enum exp_opcode sub_op = exp->elts[*pos].opcode;
+	  struct value *result;
+
+	  result = evaluate_subexp (NULL_TYPE, exp, pos,
+				    EVAL_AVOID_SIDE_EFFECTS);
+
+	  /* 'decltype' has special semantics for lvalues.  */
+	  if (op == OP_DECLTYPE
+	      && (sub_op == BINOP_SUBSCRIPT
+		  || sub_op == STRUCTOP_MEMBER
+		  || sub_op == STRUCTOP_MPTR
+		  || sub_op == UNOP_IND
+		  || sub_op == STRUCTOP_STRUCT
+		  || sub_op == STRUCTOP_PTR
+		  || sub_op == OP_SCOPE))
+	    {
+	      struct type *type = value_type (result);
+
+	      if (TYPE_CODE (check_typedef (type)) != TYPE_CODE_REF)
+		{
+		  type = lookup_reference_type (type);
+		  result = allocate_value (type);
+		}
+	    }
+
+	  return result;
+	}
+      else
+        error (_("Attempt to use a type as an expression"));
+
     default:
       /* Removing this case and compiling with gcc -Wall reveals that
          a lot of cases are hitting this case.  Some of these should
@@ -2923,6 +2996,17 @@ evaluate_subexp_for_address (struct expression *exp, int *pos,
       (*pos) += 3;
       return value_cast (lookup_pointer_type (exp->elts[pc + 1].type),
 			 evaluate_subexp (NULL_TYPE, exp, pos, noside));
+
+    case UNOP_MEMVAL_TYPE:
+      {
+	struct type *type;
+
+	(*pos) += 1;
+	x = evaluate_subexp (NULL_TYPE, exp, pos, EVAL_AVOID_SIDE_EFFECTS);
+	type = value_type (x);
+	return value_cast (lookup_pointer_type (type),
+			   evaluate_subexp (NULL_TYPE, exp, pos, noside));
+      }
 
     case OP_VAR_VALUE:
       var = exp->elts[pc + 2].symbol;
@@ -3064,6 +3148,12 @@ evaluate_subexp_for_sizeof (struct expression *exp, int *pos)
     case UNOP_MEMVAL:
       (*pos) += 3;
       type = check_typedef (exp->elts[pc + 1].type);
+      return value_from_longest (size_type, (LONGEST) TYPE_LENGTH (type));
+
+    case UNOP_MEMVAL_TYPE:
+      (*pos) += 1;
+      val = evaluate_subexp (NULL, exp, pos, EVAL_AVOID_SIDE_EFFECTS);
+      type = check_typedef (value_type (val));
       return value_from_longest (size_type, (LONGEST) TYPE_LENGTH (type));
 
     case OP_VAR_VALUE:

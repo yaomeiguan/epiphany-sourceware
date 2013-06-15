@@ -26,16 +26,41 @@
 #include "target.h"
 #include "inferior.h"
 #include "gdb_string.h"
+#include "gdb_stat.h"
 #include "inf-child.h"
 #include "gdb/fileio.h"
+#include "agent.h"
+#include "gdb_wait.h"
 
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>		/* for MAXPATHLEN */
 #endif
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+/* Helper function for child_wait and the derivatives of child_wait.
+   HOSTSTATUS is the waitstatus from wait() or the equivalent; store our
+   translation of that in OURSTATUS.  */
+void
+store_waitstatus (struct target_waitstatus *ourstatus, int hoststatus)
+{
+  if (WIFEXITED (hoststatus))
+    {
+      ourstatus->kind = TARGET_WAITKIND_EXITED;
+      ourstatus->value.integer = WEXITSTATUS (hoststatus);
+    }
+  else if (!WIFSTOPPED (hoststatus))
+    {
+      ourstatus->kind = TARGET_WAITKIND_SIGNALLED;
+      ourstatus->value.sig = gdb_signal_from_host (WTERMSIG (hoststatus));
+    }
+  else
+    {
+      ourstatus->kind = TARGET_WAITKIND_STOPPED;
+      ourstatus->value.sig = gdb_signal_from_host (WSTOPSIG (hoststatus));
+    }
+}
 
 /* Fetch register REGNUM from the inferior.  If REGNUM is -1, do this
    for all registers.  */
@@ -332,6 +357,23 @@ inf_child_fileio_readlink (const char *filename, int *target_errno)
 #endif
 }
 
+static int
+inf_child_use_agent (int use)
+{
+  if (agent_loaded_p ())
+    {
+      use_agent = use;
+      return 1;
+    }
+  else
+    return 0;
+}
+
+static int
+inf_child_can_use_agent (void)
+{
+  return agent_loaded_p ();
+}
 
 struct target_ops *
 inf_child_target (void)
@@ -371,5 +413,7 @@ inf_child_target (void)
   t->to_fileio_unlink = inf_child_fileio_unlink;
   t->to_fileio_readlink = inf_child_fileio_readlink;
   t->to_magic = OPS_MAGIC;
+  t->to_use_agent = inf_child_use_agent;
+  t->to_can_use_agent = inf_child_can_use_agent;
   return t;
 }

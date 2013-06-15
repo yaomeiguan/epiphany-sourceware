@@ -66,8 +66,8 @@ static void unk_lang_printchar (int c, struct type *type,
 static void unk_lang_print_type (struct type *, const char *, struct ui_file *,
 				 int, int);
 
-static int unk_lang_value_print (struct value *, struct ui_file *,
-				 const struct value_print_options *);
+static void unk_lang_value_print (struct value *, struct ui_file *,
+				  const struct value_print_options *);
 
 static CORE_ADDR unk_lang_trampoline (struct frame_info *, CORE_ADDR pc);
 
@@ -847,7 +847,7 @@ unk_lang_print_type (struct type *type, const char *varstring,
 	   "function unk_lang_print_type called."));
 }
 
-static int
+static void
 unk_lang_val_print (struct type *type, const gdb_byte *valaddr,
 		    int embedded_offset, CORE_ADDR address,
 		    struct ui_file *stream, int recurse,
@@ -858,7 +858,7 @@ unk_lang_val_print (struct type *type, const gdb_byte *valaddr,
 	   "function unk_lang_val_print called."));
 }
 
-static int
+static void
 unk_lang_value_print (struct value *val, struct ui_file *stream,
 		      const struct value_print_options *options)
 {
@@ -917,6 +917,7 @@ const struct language_defn unknown_language_defn =
   default_print_typedef,	/* Print a typedef using appropriate syntax */
   unk_lang_val_print,		/* Print a value using appropriate syntax */
   unk_lang_value_print,		/* Print a top-level value */
+  default_read_var_value,	/* la_read_var_value */
   unk_lang_trampoline,		/* Language specific skip_trampoline */
   "this",        	    	/* name_of_this */
   basic_lookup_symbol_nonlocal, /* lookup_symbol_nonlocal */
@@ -933,7 +934,7 @@ const struct language_defn unknown_language_defn =
   default_print_array_index,
   default_pass_by_reference,
   default_get_string,
-  strcmp_iw_ordered,
+  NULL,				/* la_get_symbol_name_cmp */
   iterate_over_symbols,
   LANG_MAGIC
 };
@@ -960,6 +961,7 @@ const struct language_defn auto_language_defn =
   default_print_typedef,	/* Print a typedef using appropriate syntax */
   unk_lang_val_print,		/* Print a value using appropriate syntax */
   unk_lang_value_print,		/* Print a top-level value */
+  default_read_var_value,	/* la_read_var_value */
   unk_lang_trampoline,		/* Language specific skip_trampoline */
   "this",		        /* name_of_this */
   basic_lookup_symbol_nonlocal,	/* lookup_symbol_nonlocal */
@@ -976,7 +978,7 @@ const struct language_defn auto_language_defn =
   default_print_array_index,
   default_pass_by_reference,
   default_get_string,
-  strcmp_iw_ordered,
+  NULL,				/* la_get_symbol_name_cmp */
   iterate_over_symbols,
   LANG_MAGIC
 };
@@ -1001,6 +1003,7 @@ const struct language_defn local_language_defn =
   default_print_typedef,	/* Print a typedef using appropriate syntax */
   unk_lang_val_print,		/* Print a value using appropriate syntax */
   unk_lang_value_print,		/* Print a top-level value */
+  default_read_var_value,	/* la_read_var_value */
   unk_lang_trampoline,		/* Language specific skip_trampoline */
   "this", 		        /* name_of_this */
   basic_lookup_symbol_nonlocal,	/* lookup_symbol_nonlocal */
@@ -1017,7 +1020,7 @@ const struct language_defn local_language_defn =
   default_print_array_index,
   default_pass_by_reference,
   default_get_string,
-  strcmp_iw_ordered,
+  NULL,				/* la_get_symbol_name_cmp */
   iterate_over_symbols,
   LANG_MAGIC
 };
@@ -1109,10 +1112,10 @@ language_lookup_primitive_type_by_name (const struct language_defn *la,
 void
 _initialize_language (void)
 {
-  static const char *type_or_range_names[]
+  static const char *const type_or_range_names[]
     = { "on", "off", "warn", "auto", NULL };
 
-  static const char *case_sensitive_names[]
+  static const char *const case_sensitive_names[]
     = { "on", "off", "auto", NULL };
 
   language_gdbarch_data

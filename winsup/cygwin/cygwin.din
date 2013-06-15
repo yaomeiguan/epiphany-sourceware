@@ -13,6 +13,8 @@ _daylight DATA
 error_message_count DATA
 error_one_per_line DATA
 error_print_progname DATA
+_fe_dfl_env DATA
+_fe_nomask_env DATA
 h_errno DATA
 _impure_ptr DATA
 in6addr_any DATA
@@ -24,6 +26,8 @@ optind DATA
 optopt DATA
 optreset DATA
 __progname DATA
+program_invocation_name DATA
+program_invocation_short_name DATA
 __rcmd_errstr DATA
 reent_data DATA
 sys_errlist = _sys_errlist DATA
@@ -504,8 +508,6 @@ fdopen SIGFE
 _fdopen = fdopen SIGFE
 _fdopen64 = fdopen64 SIGFE
 fdopendir SIGFE
-_fe_dfl_env DATA
-_fe_nomask_env DATA
 feclearexcept NOSIGFE
 fedisableexcept NOSIGFE
 feenableexcept SIGFE
@@ -736,6 +738,7 @@ _getlogin = getlogin NOSIGFE
 getlogin_r NOSIGFE
 getmntent SIGFE
 _getmntent = getmntent SIGFE
+getmntent_r SIGFE
 getmode SIGFE
 _getmode = getmode SIGFE
 getnameinfo = cygwin_getnameinfo SIGFE
@@ -1060,6 +1063,7 @@ memmove NOSIGFE
 _memmove = memmove NOSIGFE
 mempcpy NOSIGFE
 __mempcpy = mempcpy NOSIGFE
+memrchr NOSIGFE
 memset NOSIGFE
 _memset = memset NOSIGFE
 mkdir SIGFE
@@ -1176,8 +1180,6 @@ _powf = powf NOSIGFE
 ppoll SIGFE
 pread SIGFE
 printf SIGFE
-program_invocation_name DATA
-program_invocation_short_name DATA
 _printf = printf SIGFE
 pselect SIGFE
 psiginfo SIGFE
@@ -1406,6 +1408,7 @@ scalbnf NOSIGFE
 _scalbnf = scalbnf NOSIGFE
 scandir SIGFE
 _scandir = scandir SIGFE
+scandirat SIGFE
 scanf SIGFE
 _scanf = scanf SIGFE
 scanf_r = _scanf_r SIGFE

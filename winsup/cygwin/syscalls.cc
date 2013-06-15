@@ -31,7 +31,7 @@ details. */
 #include <sys/statvfs.h> /* needed for statvfs */
 #include <stdlib.h>
 #include <stdio.h>
-#include <cygwin/process.h>
+#include <process.h>
 #include <utmp.h>
 #include <utmpx.h>
 #include <sys/uio.h>
@@ -39,6 +39,7 @@ details. */
 #include <wctype.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include "ntdll.h"
 
 #undef fstat
@@ -90,23 +91,23 @@ close_all_files (bool norelease)
 
   semaphore::terminate ();
 
-  fhandler_base *fh;
   HANDLE h = NULL;
 
   for (int i = 0; i < (int) cygheap->fdtab.size; i++)
-    if ((fh = cygheap->fdtab[i]) != NULL)
-      {
-#ifdef DEBUGGING
-	debug_printf ("closing fd %d", i);
-#endif
-	if (i == 2)
-	  DuplicateHandle (GetCurrentProcess (), fh->get_output_handle (),
-			   GetCurrentProcess (), &h,
-			   0, false, DUPLICATE_SAME_ACCESS);
-	fh->close_with_arch ();
-	if (!norelease)
-	  cygheap->fdtab.release (i);
-      }
+    {
+      cygheap_fdget cfd (i, false, false);
+      if (cfd >= 0)
+	{
+	  debug_only_printf ("closing fd %d", i);
+	  if (i == 2)
+	    DuplicateHandle (GetCurrentProcess (), cfd->get_output_handle (),
+			     GetCurrentProcess (), &h,
+			     0, false, DUPLICATE_SAME_ACCESS);
+	  cfd->close_with_arch ();
+	  if (!norelease)
+	    cfd.release ();
+	}
+    }
 
   if (!have_execed && cygheap->ctty)
     cygheap->close_ctty ();
@@ -125,6 +126,18 @@ dup (int fd)
   return res;
 }
 
+inline int
+dup_finish (int oldfd, int newfd, int flags)
+{
+  int res;
+  if ((res = cygheap->fdtab.dup3 (oldfd, newfd, flags | O_EXCL)) == newfd)
+    {
+      cygheap_fdget (newfd)->inc_refcnt ();
+      cygheap->fdtab.unlock ();	/* dup3 exits with lock set on success */
+    }
+  return res;
+}
+
 extern "C" int
 dup2 (int oldfd, int newfd)
 {
@@ -140,7 +153,7 @@ dup2 (int oldfd, int newfd)
       res = (cfd >= 0) ? oldfd : -1;
     }
   else
-    res = cygheap->fdtab.dup3 (oldfd, newfd, 0);
+    res = dup_finish (oldfd, newfd, 0);
 
   syscall_printf ("%R = dup2(%d, %d)", res, oldfd, newfd);
   return res;
@@ -162,8 +175,9 @@ dup3 (int oldfd, int newfd, int flags)
       res = -1;
     }
   else
-    res = cygheap->fdtab.dup3 (oldfd, newfd, flags);
-  syscall_printf ("%R = dup2(%d, %d, %p)", res, oldfd, newfd, flags);
+    res = dup_finish (oldfd, newfd, flags);
+
+  syscall_printf ("%R = dup3(%d, %d, %p)", res, oldfd, newfd, flags);
   return res;
 }
 
@@ -198,7 +212,12 @@ stop_transaction (NTSTATUS status, HANDLE old_trans, HANDLE trans)
 }
 
 static char desktop_ini[] =
-  "[.ShellClassInfo]\r\nCLSID={645FF040-5081-101B-9F08-00AA002F954E}\r\n";
+  "[.ShellClassInfo]\r\n"
+  "CLSID={645FF040-5081-101B-9F08-00AA002F954E}\r\n";
+
+static char desktop_ini_ext[] =
+  "LocalizedResourceName=@%SystemRoot%\\system32\\shell32.dll,-8964\r\n";
+
 static BYTE info2[] =
 {
   0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -209,7 +228,8 @@ enum bin_status
 {
   dont_move,
   move_to_bin,
-  has_been_moved
+  has_been_moved,
+  dir_not_empty
 };
 
 static bin_status
@@ -226,7 +246,9 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
   PFILE_NAME_INFORMATION pfni;
   PFILE_INTERNAL_INFORMATION pfii;
   PFILE_RENAME_INFORMATION pfri;
+  ULONG frisiz;
   FILE_DISPOSITION_INFORMATION disp = { TRUE };
+  bool fs_has_per_user_recycler = pc.fs_is_ntfs () || pc.fs_is_refs ();
 
   tmp_pathbuf tp;
   PBYTE infobuf = (PBYTE) tp.w_get ();
@@ -251,8 +273,8 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
   RtlInitEmptyUnicodeString (&recycler, recyclerbuf, sizeof recyclerbuf);
   if (!pc.isremote ())
     {
-      if (wincap.has_recycle_dot_bin ())	/* NTFS and FAT since Vista */
-	RtlAppendUnicodeToString (&recycler, L"\\$Recycle.Bin\\");
+      if (wincap.has_recycle_dot_bin ()) /* NTFS and FAT since Vista, ReFS */
+	RtlAppendUnicodeToString (&recycler, L"\\$RECYCLE.BIN\\");
       else if (pc.fs_is_ntfs ())	/* NTFS up to 2K3 */
 	RtlAppendUnicodeToString (&recycler, L"\\RECYCLER\\");
       else if (pc.fs_is_fat ())	/* FAT up to 2K3 */
@@ -289,10 +311,10 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
       recycler.Length -= sizeof (WCHAR);
       /* Store length of recycler base dir, if it's necessary to create it. */
       recycler_base_len = recycler.Length;
-      /* On NTFS the recycler dir contains user specific subdirs, which are the
-	 actual recycle bins per user.  The name if this dir is the string
-	 representation of the user SID. */
-      if (pc.fs_is_ntfs ())
+      /* On NTFS or ReFS the recycler dir contains user specific subdirs, which
+	 are the actual recycle bins per user.  The name if this dir is the
+	 string representation of the user SID. */
+      if (fs_has_per_user_recycler)
 	{
 	  UNICODE_STRING sid;
 	  WCHAR sidbuf[128];
@@ -319,7 +341,10 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 			    pc.fs_flags () & FILE_UNICODE_ON_DISK
 			    ? L".\xdc63\xdc79\xdc67" : L".cyg");
   pfii = (PFILE_INTERNAL_INFORMATION) infobuf;
-  status = NtQueryInformationFile (fh, &io, pfii, 65536,
+  /* Note: Modern Samba versions apparently don't like buffer sizes of more
+     than 65535 in some NtQueryInformationFile/NtSetInformationFile calls.
+     Therefore we better use exact buffer sizes from now on. */
+  status = NtQueryInformationFile (fh, &io, pfii, sizeof *pfii,
 				   FileInternalInformation);
   if (!NT_SUCCESS (status))
     {
@@ -336,12 +361,15 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
   pfri->RootDirectory = pc.isremote () ? NULL : rootdir;
   pfri->FileNameLength = recycler.Length;
   memcpy (pfri->FileName, recycler.Buffer, recycler.Length);
-  status = NtSetInformationFile (fh, &io, pfri, 65536, FileRenameInformation);
+  frisiz = sizeof *pfri + pfri->FileNameLength - sizeof (WCHAR);
+  status = NtSetInformationFile (fh, &io, pfri, frisiz, FileRenameInformation);
   if (status == STATUS_OBJECT_PATH_NOT_FOUND && !pc.isremote ())
     {
       /* Ok, so the recycler and/or the recycler/SID directory don't exist.
 	 First reopen root dir with permission to create subdirs. */
       NtClose (rootdir);
+      InitializeObjectAttributes (&attr, &root, OBJ_CASE_INSENSITIVE,
+				  NULL, NULL);
       status = NtOpenFile (&rootdir, FILE_ADD_SUBDIRECTORY, &attr, &io,
 			   FILE_SHARE_VALID_FLAGS, FILE_OPEN_FOR_BACKUP_INTENT);
       if (!NT_SUCCESS (status))
@@ -352,14 +380,17 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 	}
       /* Then check if recycler exists by opening and potentially creating it.
 	 Yes, we can really do that.  Typically the recycle bin is created
-	 by the first user actually using the bin.  The permissions are the
-	 default permissions propagated from the root directory. */
+	 by the first user actually using the bin.  Pre-Vista, the permissions
+	 are the default permissions propagated from the root directory.
+	 Since Vista the top-level recycle dir has explicit permissions. */
       InitializeObjectAttributes (&attr, &recycler, OBJ_CASE_INSENSITIVE,
-				  rootdir, NULL);
+				  rootdir,
+				  wincap.has_recycle_dot_bin ()
+				  ? recycler_sd (true, true) : NULL);
       recycler.Length = recycler_base_len;
       status = NtCreateFile (&recyclerdir,
 			     READ_CONTROL
-			     | (pc.fs_is_ntfs () ? 0 : FILE_ADD_FILE),
+			     | (fs_has_per_user_recycler ? 0 : FILE_ADD_FILE),
 			     &attr, &io, NULL,
 			     FILE_ATTRIBUTE_DIRECTORY
 			     | FILE_ATTRIBUTE_SYSTEM
@@ -374,10 +405,12 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 	}
       /* Next, if necessary, check if the recycler/SID dir exists and
 	 create it if not. */
-      if (pc.fs_is_ntfs ())
+      if (fs_has_per_user_recycler)
 	{
 	  NtClose (recyclerdir);
 	  recycler.Length = recycler_user_len;
+	  InitializeObjectAttributes (&attr, &recycler, OBJ_CASE_INSENSITIVE,
+				      rootdir, recycler_sd (false, true));
 	  status = NtCreateFile (&recyclerdir, READ_CONTROL | FILE_ADD_FILE,
 				 &attr, &io, NULL, FILE_ATTRIBUTE_DIRECTORY
 						   | FILE_ATTRIBUTE_SYSTEM
@@ -398,7 +431,7 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 	{
 	  RtlInitUnicodeString (&fname, L"desktop.ini");
 	  InitializeObjectAttributes (&attr, &fname, OBJ_CASE_INSENSITIVE,
-				      recyclerdir, NULL);
+				      recyclerdir, recycler_sd (false, false));
 	  status = NtCreateFile (&tmp_fh, FILE_GENERIC_WRITE, &attr, &io, NULL,
 				 FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN,
 				 FILE_SHARE_VALID_FLAGS, FILE_CREATE,
@@ -414,6 +447,15 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 	      if (!NT_SUCCESS (status))
 		debug_printf ("NtWriteFile (%S) failed, status = %p",
 			      &fname, status);
+	      else if (wincap.has_recycle_dot_bin ())
+	      	{
+		  status = NtWriteFile (tmp_fh, NULL, NULL, NULL, &io,
+		  			desktop_ini_ext,
+					sizeof desktop_ini_ext - 1, NULL, NULL);
+		  if (!NT_SUCCESS (status))
+		    debug_printf ("NtWriteFile (%S) failed, status = %p",
+				  &fname, status);
+		}
 	      NtClose (tmp_fh);
 	    }
 	  if (!wincap.has_recycle_dot_bin ()) /* No INFO2 file since Vista */
@@ -441,7 +483,7 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 	}
       NtClose (recyclerdir);
       /* Shoot again. */
-      status = NtSetInformationFile (fh, &io, pfri, 65536,
+      status = NtSetInformationFile (fh, &io, pfri, frisiz,
 				     FileRenameInformation);
     }
   if (!NT_SUCCESS (status))
@@ -457,6 +499,26 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
      Otherwise the below code closes the handle to allow replacing the file. */
   status = NtSetInformationFile (fh, &io, &disp, sizeof disp,
 				 FileDispositionInformation);
+  if (status == STATUS_DIRECTORY_NOT_EMPTY)
+    {
+      /* Uh oh!  This was supposed to be avoided by the check_dir_not_empty
+	 test in unlink_nt, but given that the test isn't atomic, this *can*
+	 happen.  Try to move the dir back ASAP. */
+      pfri->RootDirectory = NULL;
+      pfri->FileNameLength = pc.get_nt_native_path ()->Length;
+      memcpy (pfri->FileName, pc.get_nt_native_path ()->Buffer,
+			      pc.get_nt_native_path ()->Length);
+      frisiz = sizeof *pfri + pfri->FileNameLength - sizeof (WCHAR);
+      if (NT_SUCCESS (NtSetInformationFile (fh, &io, pfri, frisiz,
+					    FileRenameInformation)))
+	{
+	  /* Give notice to unlink_nt and leave immediately.  This avoids
+	     closing the handle, which might still be used if called from
+	     the rm -r workaround code. */
+	  bin_stat = dir_not_empty;
+	  goto out;
+	}
+    }
   /* In case of success, restore R/O attribute to accommodate hardlinks.
      That leaves potentially hardlinks around with the R/O bit suddenly
      off if setting the delete disposition failed, but please, keep in
@@ -488,7 +550,7 @@ try_to_bin (path_conv &pc, HANDLE &fh, ACCESS_MASK access)
 		    status);
       goto out;
     }
-  status = NtSetInformationFile (tmp_fh, &io, pfri, 65536,
+  status = NtSetInformationFile (tmp_fh, &io, pfri, frisiz,
 				 FileRenameInformation);
   NtClose (tmp_fh);
   if (!NT_SUCCESS (status))
@@ -655,46 +717,45 @@ unlink_nt (path_conv &pc)
 	   if a file is already open elsewhere for other purposes than
 	   reading and writing data.  */
   status = NtOpenFile (&fh, access, &attr, &io, FILE_SHARE_DELETE, flags);
+  /* STATUS_SHARING_VIOLATION is what we expect. STATUS_LOCK_NOT_GRANTED can
+     be generated under not quite clear circumstances when trying to open a
+     file on NFS with FILE_SHARE_DELETE only.  This has been observed with
+     SFU 3.5 if the NFS share has been mounted under a drive letter.  It's
+     not generated for all files, but only for some.  If it's generated once
+     for a file, it will be generated all the time.  It looks as if wrong file
+     state information is stored within the NFS client which never times out.
+     Opening the file with FILE_SHARE_VALID_FLAGS will work, though, and it
+     is then possible to delete the file quite normally. */
   if (status == STATUS_SHARING_VIOLATION || status == STATUS_LOCK_NOT_GRANTED)
     {
-      /* STATUS_LOCK_NOT_GRANTED can be generated under not quite clear
-	 circumstances when trying to open a file on NFS with FILE_SHARE_DELETE
-	 only.  This has been observed with SFU 3.5 if the NFS share has been
-	 mounted under a drive letter.  It's not generated for all files, but
-	 only for some.  If it's generated once for a file, it will be
-	 generated all the time.  It looks like wrong file state information
-	 is stored within the NFS client, for no apparent reason, which never
-	 times out.  Opening the file with FILE_SHARE_VALID_FLAGS will work,
-	 though, and it is then possible to delete the file quite normally.
-
-	 NFS implements its own mechanism to remove in-use files which
-	 looks quite similar to what we do in try_to_bin for remote files.
-	 That's why we don't call try_to_bin on NFS.
+      debug_printf ("Sharing violation when opening %S",
+		    pc.get_nt_native_path ());
+      /* We never call try_to_bin on NFS and NetApp for the follwing reasons:
+      
+         NFS implements its own mechanism to remove in-use files, which looks
+	 quite similar to what we do in try_to_bin for remote files.
 
 	 Netapp filesystems don't understand the "move and delete" method
 	 at all and have all kinds of weird effects.  Just setting the delete
 	 dispositon usually works fine, though. */
-      debug_printf ("Sharing violation when opening %S",
-		    pc.get_nt_native_path ());
       if (!pc.fs_is_nfs () && !pc.fs_is_netapp ())
 	bin_stat = move_to_bin;
-      if (!pc.isdir () || pc.isremote ())
+      /* If the file is not a directory, of if we didn't set the move_to_bin
+	 flag, just proceed with the FILE_SHARE_VALID_FLAGS set. */
+      if (!pc.isdir () || bin_stat == dont_move)
 	status = NtOpenFile (&fh, access, &attr, &io,
 			     FILE_SHARE_VALID_FLAGS, flags);
       else
 	{
-	  /* It's getting tricky.  The directory is opened in some process,
-	     so we're supposed to move it to the recycler and mark it for
-	     deletion.  But what if the directory is not empty?  The move
+	  /* Otherwise it's getting tricky.  The directory is opened in some
+	     process, so we're supposed to move it to the recycler and mark it
+	     for deletion.  But what if the directory is not empty?  The move
 	     will work, but the subsequent delete will fail.  So we would
-	     have to move it back.  That's bad, because the directory would
-	     be moved around which results in a temporary inconsistent state.
-	     So, what we do here is to test if the directory is empty.  If
-	     not, we bail out with STATUS_DIRECTORY_NOT_EMPTY.  The below code
-	     tests for at least three entries in the directory, ".", "..",
-	     and another one.  Three entries means, not empty.  This doesn't
-	     work for the root directory of a drive, but the root dir can
-	     neither be deleted, nor moved anyway. */
+	     have to move it back.  While we do that in try_to_bin, it's bad,
+	     because the move results in a temporary inconsistent state.
+	     So, we test first if the directory is empty.  If not, we bail
+	     out with STATUS_DIRECTORY_NOT_EMPTY.  This avoids most of the
+	     problems. */
 	  status = NtOpenFile (&fh, access | FILE_LIST_DIRECTORY | SYNCHRONIZE,
 			       &attr, &io, FILE_SHARE_VALID_FLAGS,
 			       flags | FILE_SYNCHRONOUS_IO_NONALERT);
@@ -728,9 +789,15 @@ unlink_nt (path_conv &pc)
   /* Try to move to bin if a sharing violation occured.  If that worked,
      we're done. */
   if (bin_stat == move_to_bin
-      && (bin_stat = try_to_bin (pc, fh, access)) == has_been_moved)
+      && (bin_stat = try_to_bin (pc, fh, access)) >= has_been_moved)
     {
-      status = STATUS_SUCCESS;
+      if (bin_stat == has_been_moved)
+	status = STATUS_SUCCESS;
+      else
+	{
+	  status = STATUS_DIRECTORY_NOT_EMPTY;
+	  NtClose (fh);
+	}
       goto out;
     }
 
@@ -795,6 +862,7 @@ try_again:
 			  bin_stat = try_to_bin (pc, fh, access);
 			}
 		    }
+		  /* Do NOT handle bin_stat == dir_not_empty here! */
 		  if (bin_stat == has_been_moved)
 		    status = STATUS_SUCCESS;
 		  else
@@ -806,12 +874,15 @@ try_again:
 		    }
 		}
 	    }
-	  else
+	  else if (status2 != STATUS_OBJECT_PATH_NOT_FOUND
+		   && status2 !=  STATUS_OBJECT_NAME_NOT_FOUND)
 	    {
 	      fh = NULL;
 	      debug_printf ("Opening dir %S for check_dir_not_empty failed, "
 			    "status = %p", pc.get_nt_native_path (), status2);
 	    }
+	  else /* Directory disappeared between NtClose and NtOpenFile. */
+	    status = STATUS_SUCCESS;
 	}
       /* Trying to delete a hardlink to a file in use by the system in some
 	 way (for instance, font files) by setting the delete disposition fails
@@ -849,8 +920,10 @@ try_again:
 		 unlinking didn't work. */
 	      if (bin_stat == dont_move)
 		bin_stat = try_to_bin (pc, fh, access);
-	      if (bin_stat == has_been_moved)
-		status = STATUS_SUCCESS;
+	      if (bin_stat >= has_been_moved)
+		status = bin_stat == has_been_moved
+				     ? STATUS_SUCCESS
+				     : STATUS_DIRECTORY_NOT_EMPTY;
 	    }
 	  else
 	    NtClose (fh2);
@@ -860,7 +933,7 @@ try_again:
     {
       if (access & FILE_WRITE_ATTRIBUTES)
 	{
-	  /* Restore R/O attribute if setting the delete dispostion failed. */
+	  /* Restore R/O attribute if setting the delete disposition failed. */
 	  if (!NT_SUCCESS (status))
 	    NtSetAttributesFile (fh, pc.file_attributes ());
 	  /* If we succeeded, restore R/O attribute to accommodate hardlinks.
@@ -1014,10 +1087,9 @@ setsid (void)
     syscall_printf ("hmm.  pgid %d pid %d", myself->pgid, myself->pid);
   else
     {
-      myself->ctty = -1;
-      cygheap->manage_console_count ("setsid", 0);
-      myself->sid = getpid ();
-      myself->pgid = getpid ();
+      myself->ctty = -2;
+      myself->sid = myself->pid;
+      myself->pgid = myself->pid;
       if (cygheap->ctty)
 	cygheap->close_ctty ();
       syscall_printf ("sid %d, pgid %d, %s", myself->sid, myself->pgid, myctty ());
@@ -1275,7 +1347,7 @@ open (const char *unix_path, int flags, ...)
 	     tty for the process.  */
 	  int opt = PC_OPEN | ((flags & (O_NOFOLLOW | O_EXCL))
 			       ?  PC_SYM_NOFOLLOW : PC_SYM_FOLLOW);
-	  if (!(flags & O_NOCTTY) && fd > 2)
+	  if (!(flags & O_NOCTTY) && fd > 2 && myself->ctty != -2)
 	    {
 	      flags |= O_NOCTTY;
 	      opt |= PC_CTTY;	/* flag that, if opened, this fhandler could
@@ -1343,7 +1415,10 @@ lseek64 (int fd, _off64_t pos, int dir)
       else
 	res = -1;
     }
-  syscall_printf ("%R = lseek(%d, %D, %d)", res, fd, pos, dir);
+  /* Can't use %R here since res is 8 bytes */
+  syscall_printf (res == -1 ? "%D = lseek(%d, %D, %d), errno %d"
+			    : "%D = lseek(%d, %D, %d)",
+		  res, fd, pos, dir, get_errno ());
 
   return res;
 }
@@ -1581,6 +1656,49 @@ stat64_to_stat32 (struct __stat64 *src, struct __stat32 *dst)
   dst->st_blocks = src->st_blocks;
 }
 
+static struct __stat64 dev_st;
+static bool dev_st_inited;
+
+void
+fhandler_base::stat_fixup (struct __stat64 *buf)
+{
+  /* For devices, set inode number to device number.  This gives us a valid,
+     unique inode number without having to call hash_path_name. */
+  if (!buf->st_ino)
+    buf->st_ino = (get_major () == DEV_VIRTFS_MAJOR) ? get_ino ()
+						     : get_device ();
+  /* For /dev-based devices, st_dev must be set to the device number of /dev,
+     not it's own device major/minor numbers.  What we do here to speed up
+     the process is to fetch the device number of /dev only once, liberally
+     assuming that /dev doesn't change over the lifetime of a process. */
+  if (!buf->st_dev)
+    {
+      if (dev ().is_dev_resident ())
+	{
+	  if (!dev_st_inited)
+	    {
+	      stat64 ("/dev", &dev_st);
+	      dev_st_inited = true;
+	    }
+	  buf->st_dev = dev_st.st_dev;
+	}
+      else
+	buf->st_dev = get_device ();
+    }
+  /* Only set st_rdev if it's a device. */
+  if (!buf->st_rdev && get_major () != DEV_VIRTFS_MAJOR)
+    {
+      buf->st_rdev = get_device ();
+      /* consX, console, conin, and conout point to the same device.
+	 Make sure the link count is correct. */
+      if (buf->st_rdev == (dev_t) myself->ctty && iscons_dev (myself->ctty))
+	buf->st_nlink = 4;
+      /* CD-ROM drives have two links, /dev/srX and /dev/scdX. */
+      else if (gnu_dev_major (buf->st_rdev) == DEV_CDROM_MAJOR)
+	buf->st_nlink = 2;
+    }
+}
+
 extern "C" int
 fstat64 (int fd, struct __stat64 *buf)
 {
@@ -1594,14 +1712,7 @@ fstat64 (int fd, struct __stat64 *buf)
       memset (buf, 0, sizeof (struct __stat64));
       res = cfd->fstat (buf);
       if (!res)
-	{
-	  if (!buf->st_ino)
-	    buf->st_ino = cfd->get_ino ();
-	  if (!buf->st_dev)
-	    buf->st_dev = cfd->get_device ();
-	  if (!buf->st_rdev)
-	    buf->st_rdev = buf->st_dev;
-	}
+	cfd->stat_fixup (buf);
     }
 
   syscall_printf ("%R = fstat(%d, %p)", res, fd, buf);
@@ -1740,14 +1851,7 @@ stat_worker (path_conv &pc, struct __stat64 *buf)
       memset (buf, 0, sizeof (*buf));
       res = fh->fstat (buf);
       if (!res)
-	{
-	  if (!buf->st_ino)
-	    buf->st_ino = fh->get_ino ();
-	  if (!buf->st_dev)
-	    buf->st_dev = fh->get_device ();
-	  if (!buf->st_rdev)
-	    buf->st_rdev = buf->st_dev;
-	}
+	fh->stat_fixup (buf);
       delete fh;
     }
   else
@@ -2228,7 +2332,7 @@ retry:
     {
       debug_printf ("status %p", status);
       if (status == STATUS_SHARING_VIOLATION
-	  && WaitForSingleObject (signal_arrived, 10L) != WAIT_OBJECT_0)
+	  && cygwait (10L) != WAIT_SIGNALED)
 	{
 	  /* Typical BLODA problem.  Some virus scanners check newly generated
 	     files and while doing that disallow DELETE access.  That's really
@@ -3875,120 +3979,25 @@ updwtmpx (const char *wtmpx_file, const struct utmpx *utmpx)
 extern "C" long
 gethostid (void)
 {
-  unsigned data[13] = {0x92895012,
-		       0x10293412,
-		       0x29602018,
-		       0x81928167,
-		       0x34601329,
-		       0x75630198,
-		       0x89860395,
-		       0x62897564,
-		       0x00194362,
-		       0x20548593,
-		       0x96839102,
-		       0x12219854,
-		       0x00290012};
+  /* Fetch the globally unique MachineGuid value from
+     HKLM/Software/Microsoft/Cryptography and hash it. */
 
-  bool has_cpuid = false;
+  /* Caution: sizeof long might become > 4 when we go 64 bit, but gethostid
+     is supposed to return a 32 bit value, despite the return type long.
+     That's why hostid is *not* long here. */
+  int32_t hostid = 0x40291372; /* Choose a nice start value */
+  WCHAR wguid[38];
 
-  DWORD opmask = SetThreadAffinityMask (GetCurrentThread (), 1);
-  if (!opmask)
-    debug_printf ("SetThreadAffinityMask to 1 failed, %E");
-
-  if (!can_set_flag (0x00040000))
-    debug_printf ("386 processor - no cpuid");
-  else
-    {
-      debug_printf ("486 processor");
-      if (can_set_flag (0x00200000))
-	{
-	  debug_printf ("processor supports CPUID instruction");
-	  has_cpuid = true;
-	}
-      else
-	debug_printf ("processor does not support CPUID instruction");
-    }
-  if (has_cpuid)
-    {
-      unsigned maxf, unused[3];
-      cpuid (&maxf, &unused[0], &unused[1], &unused[2], 0);
-      maxf &= 0xffff;
-      if (maxf >= 1)
-	{
-	  unsigned features;
-	  cpuid (&data[0], &unused[0], &unused[1], &features, 1);
-	  if (features & (1 << 18))
-	    {
-	      debug_printf ("processor has psn");
-	      if (maxf >= 3)
-		{
-		  cpuid (&unused[0], &unused[1], &data[1], &data[2], 3);
-		  debug_printf ("Processor PSN: %04x-%04x-%04x-%04x-%04x-%04x",
-				data[0] >> 16, data[0] & 0xffff, data[2] >> 16, data[2] & 0xffff, data[1] >> 16, data[1] & 0xffff);
-		}
-	    }
-	  else
-	    debug_printf ("processor does not have psn");
-	}
-    }
-
-  LARGE_INTEGER u1;
-  ULONG u2, u3;
-  union {
-    UCHAR mac[6];
-    struct {
-      ULONG m1;
-      USHORT m2;
-    };
-  } u4;
-  NTSTATUS status = NtAllocateUuids (&u1, &u2, &u3, u4.mac);
-  if (NT_SUCCESS (status))
-    {
-      data[4] = u4.m1;
-      data[5] = u4.m2;
-      // Unfortunately Windows will sometimes pick a virtual Ethernet card
-      // e.g. VMWare Virtual Ethernet Adaptor
-      debug_printf ("MAC address of first Ethernet card: "
-		    "%02x:%02x:%02x:%02x:%02x:%02x",
-		    u4.mac[0], u4.mac[1], u4.mac[2],
-		    u4.mac[3], u4.mac[4], u4.mac[5]);
-    }
-  else
-    debug_printf ("no Ethernet card installed");
-
-  WCHAR wdata[24];
-  reg_key key (HKEY_LOCAL_MACHINE, KEY_READ, L"SOFTWARE", L"Microsoft",
-	       L"Windows NT", L"CurrentVersion", NULL);
-  key.get_string (L"ProductId", wdata, 24, L"00000-000-0000000-00000");
-  sys_wcstombs ((char *)&data[6], 24, wdata, 24);
-  debug_printf ("Windows Product ID: %s", (char *)&data[6]);
-
-  GetDiskFreeSpaceEx ("C:\\", NULL, (PULARGE_INTEGER) &data[11], NULL);
-
-  debug_printf ("hostid entropy: %08x %08x %08x %08x "
-				"%08x %08x %08x %08x "
-				"%08x %08x %08x %08x "
-				"%08x",
-				data[0], data[1],
-				data[2], data[3],
-				data[4], data[5],
-				data[6], data[7],
-				data[8], data[9],
-				data[10], data[11],
-				data[12]);
-
-  long hostid = 0x40291372;
-  // a random hashing algorithm
-  // dependancy on md5 is probably too costly
-  for (int i=0;i<13;i++)
-    hostid ^= ((data[i] << (i << 2)) | (data[i] >> (32 - (i << 2))));
-
-  if (opmask && !SetThreadAffinityMask (GetCurrentThread (), opmask))
-    debug_printf ("SetThreadAffinityMask to %p failed, %E", opmask);
-
-  debug_printf ("hostid: %08x", hostid);
-
-  return hostid;
+  reg_key key (HKEY_LOCAL_MACHINE,
+	       KEY_READ | (wincap.is_wow64() ? KEY_WOW64_64KEY : 0),
+	       L"SOFTWARE", L"Microsoft", L"Cryptography", NULL);
+  key.get_string (L"MachineGuid", wguid, 38,
+		  L"00000000-0000-0000-0000-000000000000");
+  /* SDBM hash */
+  for (PWCHAR wp = wguid; *wp; ++wp)
+    hostid = *wp + (hostid << 6) + (hostid << 16) - hostid;
+  debug_printf ("hostid 0x%08x from MachineGuid %W", hostid, wguid);
+  return (int32_t) hostid; /* Avoid sign extension. */
 }
 
 #define ETC_SHELLS "/etc/shells"
@@ -4529,6 +4538,21 @@ renameat (int olddirfd, const char *oldpathname,
   if (gen_full_path_at (newpath, newdirfd, newpathname))
     return -1;
   return rename (oldpath, newpath);
+}
+
+extern "C" int
+scandirat (int dirfd, const char *pathname, struct dirent ***namelist,
+	   int (*select) (const struct dirent *),
+	   int (*compar) (const struct dirent **, const struct dirent **))
+{
+  tmp_pathbuf tp;
+  myfault efault;
+  if (efault.faulted (EFAULT))
+    return -1;
+  char *path = tp.c_get ();
+  if (gen_full_path_at (path, dirfd, pathname))
+    return -1;
+  return scandir (pathname, namelist, select, compar);
 }
 
 extern "C" int

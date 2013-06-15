@@ -1,3 +1,177 @@
+2012-07-20  Eric Blake  <eblake@redhat.com>
+
+	* libc/posix/readdir.c (readdir): Drop bogus attempt to catch
+	bogus pointers.
+
+2012-07-18  Ralf Corsépius  <ralf.corsepius@rtems.org>
+
+	* libc/sys/rtems/machine/_types.h (_ssize_t): Use signed int for
+	__v850__, __851__.
+
+2012-07-17  Ralf Corsépius  <ralf.corsepius@rtems.org>
+
+	* libc/search/hcreate_r.c (hdestroy_r): #ifdef 0 unused vars ie, idx.
+
+2012-07-16  Ralf Corsépius  <ralf.corsepius@rtems.org>
+
+	* libc/posix/telldir.c: Conditionally build dd_hash_lock.
+
+2012-07-13  Ralf Corsépius  <ralf.corsepius@rtems.org>
+
+	* libc/sys/rtems/machine/_types.h (_ssize_t): Add __ARM_EABI__,
+	__v850__, __851__.
+
+2012-07-09  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/stdio/fileno.c (fileno): Check if f is a valid stream.  If not,
+	return -1 and set errno to EBADF per POSIX.
+
+2012-07-06  Corinna Vinschen  <vinschen@redhat.com>
+
+	Allow building of Cygwin using Mingw64 SDK headers:
+	* libc/include/sys/time.h: Drop _WINSOCK_H guard.  Just use
+	_TIMEVAL_DEFINED instead.
+	* libc/include/sys/types.h: Check for _WINSOCKAPI_ along with
+	_WINSOCK_H.
+	* libc/include/sys/unistd.h: Ditto.
+
+2012-06-28  Matthew Gretton-Dann  <matthew.gretton-dann@arm.com>
+
+	* doc/Makefile.am (makedoc): Use LDFLAGS_FOR_BUILD not LDFLAGS.
+	* doc/Makefile.in: Regenerate.
+
+2012-06-26  Christopher Faylor  <me.newlib2012@cgf.cx>
+
+	* libc/include/sys/types.h: Don't use the same preprocessor guard for
+	time_t, timespec, and itimerspec.  Add a separate guard specifically
+	for timespec and always unconditionally define itimerspec.
+
+2012-06-05  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/stdio/findfp.c (__sinit): Avoid infinite recursion on
+	_REENT_SMALL targets.  Add comment to explain.
+
+2012-05-31  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/stdio/local.h (_newlib_sfp_lock_exit): Fix typo in non-pthread
+	version.
+
+2012-05-30  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/stdio/fgetws.c (_fgetws_r): Call _mbsnrtowcs_r rather than
+	_mbsrtowcs_r and restrict number of wide chars to n - 1.
+
+2012-05-30  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/stdio/local.h (_newlib_flockfile_start): New macro to
+	secure stream related critical section against thread cancellation.
+	(_newlib_flockfile_exit): Ditto.
+	(_newlib_sfp_lock_end): Ditto.
+	(_newlib_sfp_lock_start): Ditto for the list of streams.
+	(_newlib_sfp_lock_exit): Ditto.
+	(_newlib_sfp_lock_end): Ditto.
+	Use aforementioned macros in place of _flockfile/_funlockfile
+	and __sfp_lock_acquire/__sfp_lock_release throughout the code.
+	* libc/stdio/fclose.c: Explicitely disable and re-enable thread
+	cancellation.  Explain why.
+	* libc/stdio/freopen.c: Ditto.
+	* libc/stdio64/freopen64.c: Ditto.
+
+2012-05-21  Sandeep Kumar Singh  <Sandeep.Singh2@kpitcummins.com>
+
+	* libc/machine/cr16/sys/asm.h: Added some missing instructions
+	and removed few unsupported instructions of cr16 target.
+
+2012-05-10  Yaakov Selkowitz  <yselkowitz@users.sourceforge.net>
+
+	* libc/include/string.h (memrchr): Declare.
+	* libc/string/Makefile.am (ELIX_4_SOURCES): Add memrchr.c.
+	(CHEWOUT_FILES): Add memrchr.def.
+	* libc/string/Makefile.in: Regenerate.
+	* libc/string/memrchr.c: New file.
+
+2012-05-10  Joel Sherrill <joel.sherrill@oarcorp.com>
+
+	* libc/sys/rtems/machine/_types.h: Add Microblaze.
+
+2012-05-09  Joel Sherrill <joel.sherrill@oarcorp.com>
+
+	* libc/sys/rtems/crt0.c: Add stubs for access(), ftruncate(),
+	_getpid_r(), geteuid(), getgid, _getgid_r, getpid(), getppid(),
+	and _getpid_r().
+
+2012-05-03  Greta Yorsh  <Greta.Yorsh@arm.com>
+
+	* testsuite/newlib.string/strcmp-1.c (LONG_TEST): New macro.
+	(MAX_BLOCK_SIZE): Use small value when LONG_TEST is not set.
+	(MAX_DIFF, MAX_LEN, MAX_ZEROS) Likewise.
+
+2012-03-29  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/locale/locale.c (__mb_cur_max): On Cygwin, align default value
+	with default UTF-8 charset.
+
+2012-03-26  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/stdio/findfp.c (__sinit): Set __sdidinit last.
+
+2012-03-09  Jeff Johnston  <jjohnstn@redhat.com>
+
+	* libc/include/machine/setjmp-dj.h: Modify license to include
+	modification in clause as permitted by DJ Delorie.
+	* libc/machine/arm/access.c: Ditto.
+	* libc/machine/i386/setjmp.S: Ditto.
+	* libc/sys/h8300hms/sys/file.h: Ditto.
+	* libc/sys/linux/machine/i386/setjmp.S: Ditto.
+	* libc/sys/sysmec/access.c: Ditto.
+	* libc/sys/sysnecv850/access.c: Ditto.
+
+2012-03-02  Jeff Johnston  <jjohnstn@redhat.com>
+
+	* libc/posix/readdir_r.c: Fix return code when end of
+	directory is reached.
+
+2012-02-23  Dan Egnor  <egnor@ofb.net>
+
+	* configure.host: Accept "arm*" host spec instead of just "arm".
+
+2012-02-21  Jeremy Bennett  <jeremy.bennett@embecosm.com>
+            Alan Lehotsky  <apl@alum.mit.edu>
+            Joern Rennecke  <joern.rennecke@embecosm.com>
+
+	* configure.host: Add Epiphany support.
+	* libc/include/machine/ieeefp.h: Likewise.
+	* libc/include/machine/setjmp.h: Likewise.
+	* libc/machine/configure.in, libc/sys/configure.in: Likewise.
+	* libc/machine/configure, libc/sys/configure: Regenerate.
+	* libc/machine/epiphany, libc/sys/epiphany: New directories.
+	* NEWS: Mention addition of Epiphany.
+
+2012-02-15  Christopher Faylor  <me.newlib2012@cgf.cx>
+
+	* configure.host: Fix typo: xdir_dir -> xdr_dir.
+
+2012-02-09  Eric Blake  <eblake@redhat.com>
+
+	* libc/include/_ansi.h (_ELIDABLE_INLINE): Fix C99 mode.
+
+2012-02-09  Sebastian Huber <sebastian.huber@embedded-brains.de>
+
+	* libc/sys/rtems/sys/utime.h: Include <sys/types.h> to provide a
+	definition of time_t.
+
+2012-02-08  Greta Yorsh  <Greta.Yorsh@arm.com>
+
+	* libc/machine/arm/strcmp.S: New File.
+	* libc/machine/arm/strcmp.c: Deleted.
+	* libc/machine/arm/Makefile.am: Replaces strcmp.c with strcmp.S
+	* libc/machine/arm/Makefile.in: Regenerated.
+	* testsuite/newlib.string/strcmp-1.c: New file.
+
+2012-02-07  Corinna Vinschen  <vinschen@redhat.com>
+
+	* libc/include/inttypes.h: Redefine pointer type macros.
+
 2012-01-13  Yaakov Selkowitz  <yselkowitz@users.sourceforge.net>
 
 	* libc/stdio/sprintf.c: Document 'm' conversion specifier.

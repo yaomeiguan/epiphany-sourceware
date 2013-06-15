@@ -36,6 +36,7 @@
 #include <ctype.h>
 #include "mips-tdep.h"
 #include "gdbthread.h"
+#include "gdb_bfd.h"
 
 
 /* Breakpoint types.  Values 0, 1, and 2 must agree with the watch
@@ -1537,7 +1538,6 @@ common_open (struct target_ops *ops, char *name, int from_tty,
 	     enum mips_monitor_type new_monitor,
 	     const char *new_monitor_prompt)
 {
-  char *ptype;
   char *serial_port_name;
   char *remote_name = 0;
   char *local_name = 0;
@@ -1757,7 +1757,7 @@ mips_detach (struct target_ops *ops, char *args, int from_tty)
 
 static void
 mips_resume (struct target_ops *ops,
-	     ptid_t ptid, int step, enum target_signal siggnal)
+	     ptid_t ptid, int step, enum gdb_signal siggnal)
 {
   int err;
 
@@ -1771,7 +1771,7 @@ mips_resume (struct target_ops *ops,
 /* Return the signal corresponding to SIG, where SIG is the number which
    the MIPS protocol uses for the signal.  */
 
-static enum target_signal
+static enum gdb_signal
 mips_signal_from_protocol (int sig)
 {
   /* We allow a few more signals than the IDT board actually returns, on
@@ -1779,13 +1779,13 @@ mips_signal_from_protocol (int sig)
      for these signals is widely agreed upon.  */
   if (sig <= 0
       || sig > 31)
-    return TARGET_SIGNAL_UNKNOWN;
+    return GDB_SIGNAL_UNKNOWN;
 
-  /* Don't want to use target_signal_from_host because we are converting
+  /* Don't want to use gdb_signal_from_host because we are converting
      from MIPS signal numbers, not host ones.  Our internal numbers
      match the MIPS numbers for the signals the board can return, which
      are: SIGINT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP.  */
-  return (enum target_signal) sig;
+  return (enum gdb_signal) sig;
 }
 
 /* Set the register designated by REGNO to the value designated by VALUE.  */
@@ -1828,7 +1828,6 @@ mips_wait (struct target_ops *ops,
   ULONGEST rpc, rfp, rsp;
   char pc_string[17], fp_string[17], sp_string[17], flags[20];
   int nfields;
-  int i;
 
   interrupt_count = 0;
   hit_watchpoint = 0;
@@ -1839,7 +1838,7 @@ mips_wait (struct target_ops *ops,
   if (!mips_need_reply)
     {
       status->kind = TARGET_WAITKIND_STOPPED;
-      status->value.sig = TARGET_SIGNAL_TRAP;
+      status->value.sig = GDB_SIGNAL_TRAP;
       return inferior_ptid;
     }
 
@@ -1954,7 +1953,7 @@ mips_wait (struct target_ops *ops,
          is not a normal breakpoint.  */
       if (strcmp (target_shortname, "lsi") == 0)
 	{
-	  char *func_name;
+	  const char *func_name;
 	  CORE_ADDR func_start;
 	  CORE_ADDR pc = regcache_read_pc (get_current_regcache ());
 
@@ -2384,7 +2383,7 @@ mips_remove_breakpoint (struct gdbarch *gdbarch,
    is the number of hardware breakpoints already installed.  This
    implements the target_can_use_hardware_watchpoint macro.  */
 
-int
+static int
 mips_can_use_watchpoint (int type, int cnt, int othertype)
 {
   return cnt < MAX_LSI_BREAKPOINTS && strcmp (target_shortname, "lsi") == 0;
@@ -2418,7 +2417,7 @@ calculate_mask (CORE_ADDR addr, int len)
    for a write watchpoint, 1 for a read watchpoint, or 2 for a read/write
    watchpoint.  */
 
-int
+static int
 mips_insert_watchpoint (CORE_ADDR addr, int len, int type,
 			struct expression *cond)
 {
@@ -2430,7 +2429,7 @@ mips_insert_watchpoint (CORE_ADDR addr, int len, int type,
 
 /* Remove a watchpoint.  */
 
-int
+static int
 mips_remove_watchpoint (CORE_ADDR addr, int len, int type,
 			struct expression *cond)
 {
@@ -2443,7 +2442,7 @@ mips_remove_watchpoint (CORE_ADDR addr, int len, int type,
 /* Test to see if a watchpoint has been hit.  Return 1 if so; return 0,
    if not.  */
 
-int
+static int
 mips_stopped_by_watchpoint (void)
 {
   return hit_watchpoint;
@@ -2785,20 +2784,23 @@ mips_load_srec (char *args)
   unsigned int i;
   unsigned int srec_frame = 200;
   int reclen;
+  struct cleanup *cleanup;
   static int hashmark = 1;
 
   buffer = alloca (srec_frame * 2 + 256);
 
-  abfd = bfd_openr (args, 0);
+  abfd = gdb_bfd_openr (args, 0);
   if (!abfd)
     {
       printf_filtered ("Unable to open file %s\n", args);
       return;
     }
 
+  cleanup = make_cleanup_bfd_unref (abfd);
   if (bfd_check_format (abfd, bfd_object) == 0)
     {
       printf_filtered ("File is not an object file\n");
+      do_cleanups (cleanup);
       return;
     }
 
@@ -2852,6 +2854,7 @@ mips_load_srec (char *args)
   send_srec (srec, reclen, abfd->start_address);
 
   serial_flush_input (mips_desc);
+  do_cleanups (cleanup);
 }
 
 /*
@@ -3368,20 +3371,23 @@ pmon_load_fast (char *file)
   int bintotal = 0;
   int final = 0;
   int finished = 0;
+  struct cleanup *cleanup;
 
   buffer = (char *) xmalloc (MAXRECSIZE + 1);
   binbuf = (unsigned char *) xmalloc (BINCHUNK);
 
-  abfd = bfd_openr (file, 0);
+  abfd = gdb_bfd_openr (file, 0);
   if (!abfd)
     {
       printf_filtered ("Unable to open file %s\n", file);
       return;
     }
+  cleanup = make_cleanup_bfd_unref (abfd);
 
   if (bfd_check_format (abfd, bfd_object) == 0)
     {
       printf_filtered ("File is not an object file\n");
+      do_cleanups (cleanup);
       return;
     }
 
@@ -3505,6 +3511,7 @@ pmon_load_fast (char *file)
       pmon_end_download (final, bintotal);
     }
 
+  do_cleanups (cleanup);
   return;
 }
 
